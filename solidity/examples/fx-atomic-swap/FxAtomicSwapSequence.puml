@@ -45,8 +45,8 @@ BaseToken --> PartyB -- : true
 
 note over PartyA, QuoteToken
 For this sign configuration, Party A authorizes quote-token spending
-and Party B authorizes base-token spending. The approvals can be reused
-across all swaps registered with the same router.
+and Party B authorizes base-token spending. Any remaining allowance can be used
+by other swaps registered with the same router.
 end note
 
 == Creation and one-time authorization ==
@@ -58,9 +58,10 @@ Factory -> Swap ++ : new FxAtomicSwap(\n  BaseToken, QuoteToken, PartyA, PartyB,
 Swap -> Swap : store immutable tokens, parties, and Router\nphase = Created
 Swap --> Factory -- : swap address
 Factory -> Router ++ : registerSwap(Swap)
-Router -> Router : require msg.sender == Factory\nactiveSwap[Swap] = true
+Router -> Router : require msg.sender == Factory\nrequire Swap has code and is not active\nactiveSwap[Swap] = true
 Router --> Factory -- : registered
-Factory --> PartyA -- : Swap address\nSwapCreated
+Factory -> Factory : emit SwapCreated(Swap, PartyA, BaseToken, QuoteToken, PartyA, PartyB)
+Factory --> PartyA -- : Swap address
 
 note over Swap, Router
 The router stores only one active flag per swap.
@@ -68,8 +69,9 @@ The swap is the single source of tokens, parties, and terms.
 end note
 
 note over PartyA, Swap
+The arrows below show direct participant calls.
 A participant may call setTradeOperator(operator, true) on this swap.
-That operator may submit the following calls on behalf of that participant.
+A's approved operator may submit inception or cancellation; B's may confirm.
 Caller identity does not change either participant or the amount perspective.
 Approval is checked at execution and may be revoked with false.
 ERC-20 allowances alone do not authorize trade actions.
@@ -78,9 +80,10 @@ end note
 == ERC-6123 inception by Party A ==
 
 PartyA -> Swap ++ : inceptTrade(\n  PartyA, PartyB, tradeData,\n  +BASE_QTY, -QUOTE_QTY, settlementData\n)
-Swap -> Swap : validate explicit fixed parties\nauthorize caller for PartyA\nvalidate nonzero, opposite-sign legs
+Swap -> Swap : require phase == Created\nvalidate explicit fixed parties\nauthorize caller for PartyA\nvalidate nonzero, opposite-sign legs; reject int256 minimum
 Swap -> Swap : inceptor = PartyA\nposition = +BASE_QTY\npaymentAmount = -QUOTE_QTY\nstore textual terms\nphase = Incepted
-Swap --> PartyA -- : tradeId = "1"\nTradeIncepted
+Swap -> Swap : emit TradeIncepted(PartyA, PartyB, "1", tradeData,\n  +BASE_QTY, -QUOTE_QTY, settlementData)
+Swap --> PartyA -- : tradeId = "1"
 
 note right of Swap
 Sign convention from the inceptor's perspective:
@@ -93,7 +96,7 @@ end note
 alt Party B confirms successfully before cancellation
 
 PartyB -> Swap ++ : confirmTrade(\n  PartyA, PartyB, same tradeData,\n  +BASE_QTY, -QUOTE_QTY, same settlementData\n)
-Swap -> Swap : authorize caller for PartyB\nmatch both parties, original signed amounts, and terms
+Swap -> Swap : require phase == Incepted\nmatch both stored parties\nauthorize caller for PartyB\nmatch original signed amounts and terms
 Swap -> Swap : phase = Settled\n(checks-effects-interactions)
 Swap -> Router ++ : settleAtomicSwap(\n  BaseToken, QuoteToken, PartyA, PartyB,\n  +BASE_QTY, -QUOTE_QTY\n)
 
@@ -110,13 +113,19 @@ from settling twice, including through a callback.
 A global reentrancy lock is unnecessary for independent swaps.
 end note
 
+note over Router, QuoteToken
+The included tokens return true, as shown below.
+The router also accepts empty return data. A revert, false return,
+or invalid ABI-encoded boolean causes settlement to revert.
+end note
+
 group Base leg: Party B delivers base to Party A
     Router -> BaseToken ++ : transferFrom(PartyB, PartyA, BASE_QTY)
     note over Router, BaseToken
     Inside BaseToken, msg.sender = Router.
     Therefore allowance[PartyB][Router] is used.
     end note
-    BaseToken -> BaseToken : check allowance and balance\nupdate balances and allowance
+    BaseToken -> BaseToken : check allowance and balance\nupdate balances and decrease finite allowance
     BaseToken --> Router -- : true
 end
 
@@ -126,31 +135,31 @@ group Quote leg: Party A delivers quote to Party B
     Inside QuoteToken, msg.sender = Router.
     Therefore allowance[PartyA][Router] is used.
     end note
-    QuoteToken -> QuoteToken : check allowance and balance\nupdate balances and allowance
+    QuoteToken -> QuoteToken : check allowance and balance\nupdate balances and decrease finite allowance
     QuoteToken --> Router -- : true
 end
 
 Router --> Swap -- : settlement completed
-Swap -> Swap : emit TradeConfirmed\nemit TradeTerminated
+Swap -> Swap : emit TradeConfirmed(PartyB, "1")\nemit TradeTerminated("1", "atomic settlement completed")
 Swap --> PartyB -- : confirmation transaction succeeds
 
 note over PartyA, QuoteToken
-All calls occur within Party B's single confirmation transaction.
-If validation or either transferFrom fails, the transaction reverts
-atomically: both token transfers and both state changes are undone.
-The quote remains Incepted with activeSwap[Swap] = true:
-Party B may retry, or Party A may cancel.
+Settlement occurs in one transaction submitted by Party B or its approved operator.
+If validation or either token call fails, all effects of that transaction are undone.
+For the open quote shown here, phase remains Incepted and activeSwap[Swap] = true:
+Party B may retry, or Party A may cancel, directly or through their approved operators.
+A rejected call after settlement or cancellation preserves that terminal state.
 end note
 
 else Party A cancels before successful confirmation
 
 PartyA -> Swap ++ : cancelTrade(\n  PartyA, PartyB, same tradeData,\n  +BASE_QTY, -QUOTE_QTY, same settlementData\n)
-Swap -> Swap : require phase == Incepted\nauthorize caller for PartyA\nmatch both parties and all original terms
+Swap -> Swap : require phase == Incepted\nmatch both stored parties\nauthorize caller for PartyA\nmatch all original terms
 Swap -> Swap : phase = Canceled\n(checks-effects-interactions)
 Swap -> Router ++ : cancelAtomicSwap()
 Router -> Router : require activeSwap[Swap]\nactiveSwap[Swap] = false
 Router --> Swap -- : authorization revoked
-Swap -> Swap : emit TradeCanceled
+Swap -> Swap : emit TradeCanceled(PartyA, "1")
 Swap --> PartyA -- : cancellation transaction succeeds
 
 note over PartyA, QuoteToken
@@ -161,10 +170,11 @@ end note
 end
 
 note over PartyA, QuoteToken
-An open quote expires only through the inceptor's successful cancelTrade transaction.
+An open quote is withdrawn through cancelTrade by the inceptor or its approved operator.
 There is no clock-based expiry; transaction order determines which terminal action succeeds.
 Settled and Canceled are final. A new quote needs a new factory-created swap;
 the shared router and any remaining allowances can be reused.
+The request/confirm/cancelTradeTermination methods are unsupported and revert.
 end note
 
 @enduml
