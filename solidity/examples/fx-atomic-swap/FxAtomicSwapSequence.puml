@@ -8,9 +8,11 @@ skinparam sequenceMessageAlign center
 skinparam responseMessageBelowArrow true
 
 actor "Deployer" as Deployer
+actor "Registry owner\n(proposed route)" as RegistryOwner #FFF2CC
 actor "Party A\n(inceptor)" as PartyA
 actor "Party B\n(confirmer)" as PartyB
-participant "FxAtomicSwapFactory" as Factory
+participant "ProductDefinitionRegistry\n(proposed route)" as Registry #FFF2CC
+participant "Factory\nstandalone: FxAtomicSwapFactory\nproposed: FxAtomicSwapProductFactory" as Factory
 participant "ERC20AtomicSwapSettlementRouter\n(common spender)" as Router
 participant "FxAtomicSwap\n(single-use swap)" as Swap
 participant "Base ERC-20" as BaseToken
@@ -18,7 +20,19 @@ participant "Quote ERC-20" as QuoteToken
 
 == Factory and settlement router deployment ==
 
-Deployer -> Factory ++ : new FxAtomicSwapFactory()
+note over RegistryOwner, Factory #FFF2CC
+The framework route is a proposal, not implemented Solidity.
+Select one factory deployment: standalone OR framework-aware.
+The proposed factory extends AbstractProductFactory and directly deploys FX swaps.
+It owns its router; it does not forward through the standalone factory.
+end note
+
+alt Standalone deployment (implemented)
+Deployer -> Factory : new FxAtomicSwapFactory()
+else Framework deployment (proposed)
+Deployer -> Factory : new FxAtomicSwapProductFactory(Registry)
+end
+activate Factory
 create Router
 Factory -> Router ++ : new ERC20AtomicSwapSettlementRouter(address(Factory))
 Router -> Router : factory = Factory\n(immutable)
@@ -26,11 +40,24 @@ Router --> Factory -- : router deployed
 Factory -> Factory : settlementRouter = Router\n(immutable)
 Factory --> Deployer -- : factory deployed
 
+opt Proposed framework route: publish an FX product definition once
+RegistryOwner -> Registry ++ : publishProductDefinition({name,\n  productDefinition: {Factory, termsTemplate, documentationTemplate}})
+Registry -> Factory ++ : check IProductFactory via ERC-165, configured registry,\n  payload schema and required resource types
+Factory --> Registry -- : factory configuration
+Registry -> Registry : validate finalized terms/documentation resources\nstore definition; emit ProductDefinitionPublished
+Registry --> RegistryOwner -- : productDefinitionId
+note over RegistryOwner, Factory #FFF2CC
+Registry and finalized text resources are already deployed.
+No indication assignment or trade-request workflow is required for this route.
+Resource validation calls are summarized above.
+end note
+end
+
 == ERC-20 allowances ==
 
 note over PartyA, QuoteToken
 Allowances are given early to the deployed settlementRouter.
-Swaps created through the FxAtomicSwapFactory will settle through the settlementRouter.
+Swaps created through the selected factory settle through its settlementRouter.
 Tokens must transfer the exact requested amount synchronously.
 Fee-on-transfer and rebasing tokens are outside this example's supported scope.
 end note
@@ -51,8 +78,16 @@ end note
 
 == Creation and one-time authorization ==
 
-PartyA -> Factory ++ : createSwap(BaseToken, QuoteToken, PartyA, PartyB)
+alt Standalone creation (implemented)
+PartyA -> Factory : createSwap(BaseToken, QuoteToken, PartyA, PartyB)
 Factory -> Factory : require caller is PartyA or PartyB
+else Framework issuance (proposed alternative)
+RegistryOwner -> Registry : issueProductWithoutRequests({productDefinitionId,\n  productPayload: abi.encode(BaseToken, QuoteToken, PartyA, PartyB)})
+Registry -> Registry : require registry owner and fulfillable definition\nassemble immutable definition context
+Registry -> Factory : deployProduct({common, productPayload})
+Factory -> Factory : require caller and common.productRegistry match Registry\ndecode BaseToken, QuoteToken, PartyA, PartyB
+end
+
 create Swap
 Factory -> Swap ++ : new FxAtomicSwap(\n  BaseToken, QuoteToken, PartyA, PartyB, Router\n)
 Swap -> Swap : store immutable tokens, parties, and Router\nphase = Created
@@ -60,8 +95,24 @@ Swap --> Factory -- : swap address
 Factory -> Router ++ : registerSwap(Swap)
 Router -> Router : require msg.sender == Factory\nrequire Swap has code and is not active\nactiveSwap[Swap] = true
 Router --> Factory -- : registered
+
+alt Standalone return (implemented)
 Factory -> Factory : emit SwapCreated(Swap, PartyA, BaseToken, QuoteToken, PartyA, PartyB)
-Factory --> PartyA -- : Swap address
+Factory --> PartyA : Swap address
+else Framework registration (proposed alternative)
+Factory -> Factory : record factory provenance\nemit ProductDeployed(common.productProvider, productDefinitionId, Swap)
+Factory --> Registry : Swap address
+Registry -> Factory ++ : isFactoryDeployedProduct(Swap)
+Factory --> Registry -- : true
+Registry -> Registry : verify deployed code and provenance\nrecord registered product; emit ProductIssued
+Registry --> RegistryOwner : Swap address
+note over RegistryOwner, Swap #FFF2CC
+Issuance only creates the swap. It does not authorize a trade or move tokens.
+The no-request route does not automatically check client eligibility.
+The existing party/operator agreement below remains required.
+The current registry does not require IProduct metadata getters on the swap.
+end note
+end
 
 note over Swap, Router
 The router stores only one active flag per swap.

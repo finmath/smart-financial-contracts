@@ -678,6 +678,54 @@ The tests run locally without Anvil or the renderer service. They cover settleme
 - Current renderer “Try It” example: `https://representable-contract-state-b50ce5.gitlab.io/try-it/index.html`
 - ERC-6123: `https://eips.ethereum.org/EIPS/eip-6123`
 
+## Proposed Smart Product Framework integration
+
+The standalone swap already has a separate reusable factory. A lightweight framework
+integration can keep `FxAtomicSwap` and its settlement router unchanged and add an
+alternative `FxAtomicSwapProductFactory` in the framework package. This is a design
+proposal; the factory described here is not yet implemented.
+
+The proposed factory would extend `AbstractProductFactory` and:
+
+- Receive the authorized `ProductDefinitionRegistry` in its constructor and deploy
+  one `ERC20AtomicSwapSettlementRouter` with itself as the immutable factory.
+- Describe an ABI-encoded payload `(baseToken, quoteToken, partyA, partyB)` and expose
+  the required terms/documentation resource-type identifiers. Initially,
+  `isAcceptedIndicationCategory` can return `false`.
+- Implement `_deployProduct` by decoding that payload, deploying the existing
+  `FxAtomicSwap`, and calling its own router's `registerSwap` in the same transaction.
+  The base factory records deployment provenance and emits `ProductDeployed`.
+
+Use one factory deployment for the selected route. The framework factory is an
+alternative to the standalone factory, not an additional forwarding layer. Calling
+`createSwap` on the standalone factory from an adapter would fail its participant
+check; an adapter also cannot register swaps with a router owned by another factory.
+
+The registry owner first publishes an FX definition referencing this factory and
+finalized terms/documentation resources. It can then call
+`issueProductWithoutRequests({productDefinitionId, productPayload})`. The registry
+assembles the common definition context, invokes `deployProduct`, verifies the
+factory's provenance record, and records/emits the issued product. Trade requests
+and indications can be introduced later without putting them in this initial path.
+
+Issuance leaves the swap in `Created`. The actual participants and their authorized
+operators still establish the economic terms through the existing ERC-6123 inception
+and confirmation calls. The payload identifies the participants independently of
+`common.productProvider`, which the current registry sets to its owner. Issuance
+neither establishes party consent nor moves tokens. The no-request path does not
+perform automatic client-eligibility checks; any required policy would need an
+explicit factory check or the appropriate request workflow.
+
+The current registry verifies deployed code and factory provenance; it does not
+require `IProduct` metadata getters on the returned swap. This makes factory-only
+integration sufficient for issuance and registry discovery. Generic consumers that
+expect `productFactory`, `productDefinitionId`, or the other `IProduct` getters would
+need a small metadata extension later. The existing FX ERC-8100 view remains usable.
+
+Keeping the reusable factory separate from each single-use swap preserves the
+shared router and avoids adding deployment responsibilities to every trade instance.
+The diagram below marks the proposed framework path separately from implemented calls.
+
 ## Sequence Diagram
 
 <a href="FxAtomicSwapSequence.svg">
