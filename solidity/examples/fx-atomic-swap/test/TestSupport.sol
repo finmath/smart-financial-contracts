@@ -86,7 +86,7 @@ contract ReentrantCounterparty is ITransferHook {
     function confirm(FxAtomicSwap swap_, address inceptor_) external {
         swap = swap_;
         inceptor = inceptor_;
-        swap.confirmTrade(inceptor, "terms", -100, 200, "settlement");
+        swap.confirmTrade(inceptor, address(this), "terms", 100, -200, "settlement");
     }
 
     function onTransfer() external {
@@ -94,7 +94,8 @@ contract ReentrantCounterparty is ITransferHook {
         (bool success, bytes memory errorData) = address(swap)
             .call(
                 abi.encodeCall(
-                    FxAtomicSwap.confirmTrade, (inceptor, "terms", -100, 200, "settlement")
+                    FxAtomicSwap.confirmTrade,
+                    (inceptor, address(this), "terms", 100, -200, "settlement")
                 )
             );
         require(!success, "reentrant confirmation succeeded");

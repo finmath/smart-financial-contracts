@@ -2,6 +2,7 @@
 pragma solidity ^0.8.24;
 
 import "./ISDCTrade.sol";
+import {TradeAuthorizable} from "@finmath.net/sdc/contracts/TradeAuthorizable.sol";
 import "./ERC20AtomicSwapSettlementRouter.sol";
 
 /// @notice Interface for exposing an ERC-8100-style XML state template.
@@ -18,7 +19,7 @@ interface IXMLRepresentableState {
  *      An open quote remains confirmable until the inceptor calls `cancelTrade`;
  *      cancellation and settlement are terminal for this single-use swap.
  */
-contract FxAtomicSwap is ISDCTrade, IXMLRepresentableState {
+contract FxAtomicSwap is ISDCTrade, IXMLRepresentableState, TradeAuthorizable {
     enum Phase {
         Created,
         Incepted,
@@ -101,33 +102,32 @@ contract FxAtomicSwap is ISDCTrade, IXMLRepresentableState {
     }
 
     /**
-     * @notice Incepts the swap and stores its economic and textual terms.
-     * @dev Sign convention from the inceptor's perspective:
-     *
-     *      - `position > 0`, `paymentAmount < 0`: receive base and pay quote;
-     *      - `position < 0`, `paymentAmount > 0`: pay base and receive quote.
-     *
-     *      Both legs must therefore be nonzero and have opposite signs. Their
-     *      absolute amounts jointly define the implied FX rate.
-     * @param withParty Counterparty to the inceptor.
+     * @notice Incepts the swap for two explicitly identified participants.
+     * @dev The caller must be the inceptor or its approved operator. Both signed
+     *      amounts are viewed from the inceptor and remain unchanged on confirmation
+     *      and cancellation. Positive means receive; negative means deliver.
+     * @param inceptor_ Participant proposing the trade.
+     * @param counterparty_ Opposite fixed participant.
      * @param tradeData_ Trade description, for example XML.
-     * @param position_ Signed base-token amount from `msg.sender`'s perspective.
-     * @param paymentAmount_ Signed quote-token amount from `msg.sender`'s perspective.
+     * @param position_ Signed base-token amount from the inceptor's perspective.
+     * @param paymentAmount_ Signed quote-token amount from the inceptor's perspective.
      * @param initialSettlementData_ Initial settlement or market data.
      * @return id Local trade identifier.
      */
     function inceptTrade(
-        address withParty,
+        address inceptor_,
+        address counterparty_,
         string calldata tradeData_,
         int256 position_,
         int256 paymentAmount_,
         string calldata initialSettlementData_
     ) external override returns (string memory id) {
         if (phase != Phase.Created) revert InvalidPhase();
-        if (withParty != _other(msg.sender)) revert InvalidParty();
+        if (counterparty_ != _other(inceptor_)) revert InvalidParty();
+        _requireTradeAuthorization(inceptor_);
         _checkLegs(position_, paymentAmount_);
 
-        inceptor = msg.sender;
+        inceptor = inceptor_;
         position = position_;
         paymentAmount = paymentAmount_;
         tradeData = tradeData_;
@@ -136,102 +136,88 @@ contract FxAtomicSwap is ISDCTrade, IXMLRepresentableState {
 
         id = tradeId();
         emit TradeIncepted(
-            msg.sender,
-            withParty,
-            id,
-            tradeData_,
-            position_,
-            paymentAmount_,
+            inceptor_, counterparty_, id, tradeData_, position_, paymentAmount_,
             initialSettlementData_
         );
     }
 
     /**
-     * @notice Confirms matching terms and atomically settles both token legs.
-     * @dev The confirmer supplies the exact negatives of the inceptor's signed
-     *      amounts. `phase` is changed before the external router call; a failure
-     *      in the router or either token reverts the entire transaction.
-     * @param withParty Must be the original inceptor.
-     * @param tradeData_ Trade description, which must match inception.
-     * @param position_ Negated base-token amount from the confirmer's perspective.
-     * @param paymentAmount_ Negated quote-token amount from the confirmer's perspective.
-     * @param initialSettlementData_ Settlement data, which must match inception.
+     * @notice Confirms the immutable inception and atomically settles both token legs.
+     * @dev The caller must be the stored counterparty or its approved operator.
+     *      Participants, amounts and textual terms exactly repeat inception.
+     *      A failed router or token call reverts the whole transaction.
+     * @param inceptor_ Original inceptor.
+     * @param counterparty_ Original counterparty.
+     * @param tradeData_ Trade description stored at inception.
+     * @param position_ Original signed base-token amount, viewed from the inceptor.
+     * @param paymentAmount_ Original signed quote-token amount, viewed from the inceptor.
+     * @param initialSettlementData_ Settlement data stored at inception.
      */
     function confirmTrade(
-        address withParty,
+        address inceptor_,
+        address counterparty_,
         string calldata tradeData_,
         int256 position_,
         int256 paymentAmount_,
         string calldata initialSettlementData_
     ) external override {
         if (phase != Phase.Incepted) revert InvalidPhase();
-        if (msg.sender != _other(inceptor) || withParty != inceptor) {
-            revert InvalidParty();
-        }
-        if (position_ != -position || paymentAmount_ != -paymentAmount) {
-            revert TermsMismatch();
-        }
-        if (
-            _hashTerms(tradeData_, initialSettlementData_)
-                != _hashTerms(tradeData, initialSettlementData)
-        ) {
-            revert TermsMismatch();
-        }
+        address tradeCounterparty = _other(inceptor);
+        if (inceptor_ != inceptor || counterparty_ != tradeCounterparty) revert InvalidParty();
+        _requireTradeAuthorization(tradeCounterparty);
+        _matchTerms(tradeData_, position_, paymentAmount_, initialSettlementData_);
 
         // Checks-effects-interactions. A revert restores this assignment.
         phase = Phase.Settled;
-
         settlementRouter.settleAtomicSwap(
-            baseToken,
-            quoteToken,
-            inceptor,
-            msg.sender,
-            position,
-            paymentAmount
+            baseToken, quoteToken, inceptor, tradeCounterparty, position, paymentAmount
         );
 
         string memory id = tradeId();
-        emit TradeConfirmed(msg.sender, id);
+        emit TradeConfirmed(tradeCounterparty, id);
         emit TradeTerminated(id, "atomic settlement completed");
     }
 
     /**
      * @notice Cancels an incepted swap before confirmation.
-     * @dev Only the inceptor may cancel and all supplied terms must match.
-     *      This withdraws the open quote and revokes its router authorization
-     *      without moving tokens or changing shared ERC-20 allowances. There is
-     *      no clock-based expiry: the first successful cancellation or confirmation
-     *      transaction determines the terminal outcome. A new quote needs a new swap.
-     * @param withParty Must be the other fixed counterparty.
-     * @param tradeData_ Trade description, which must match inception.
-     * @param position_ Signed base-token amount from the inceptor's perspective.
-     * @param paymentAmount_ Signed quote-token amount from the inceptor's perspective.
-     * @param initialSettlementData_ Settlement data, which must match inception.
+     * @dev The caller must be the stored inceptor or its approved operator and all
+     *      arguments must repeat inception. Cancellation revokes router authorization
+     *      without moving tokens or changing shared ERC-20 allowances. There is no
+     *      clock-based expiry; the first successful cancellation or confirmation wins.
+     * @param inceptor_ Original inceptor.
+     * @param counterparty_ Original counterparty.
+     * @param tradeData_ Trade description stored at inception.
+     * @param position_ Original signed base-token amount, viewed from the inceptor.
+     * @param paymentAmount_ Original signed quote-token amount, viewed from the inceptor.
+     * @param initialSettlementData_ Settlement data stored at inception.
      */
     function cancelTrade(
-        address withParty,
+        address inceptor_,
+        address counterparty_,
         string calldata tradeData_,
         int256 position_,
         int256 paymentAmount_,
         string calldata initialSettlementData_
     ) external override {
         if (phase != Phase.Incepted) revert InvalidPhase();
-        if (msg.sender != inceptor || withParty != _other(inceptor)) {
-            revert InvalidParty();
-        }
-        if (position_ != position || paymentAmount_ != paymentAmount) {
-            revert TermsMismatch();
-        }
-        if (
-            _hashTerms(tradeData_, initialSettlementData_)
-                != _hashTerms(tradeData, initialSettlementData)
-        ) {
-            revert TermsMismatch();
-        }
+        if (inceptor_ != inceptor || counterparty_ != _other(inceptor)) revert InvalidParty();
+        _requireTradeAuthorization(inceptor);
+        _matchTerms(tradeData_, position_, paymentAmount_, initialSettlementData_);
 
         phase = Phase.Canceled;
         settlementRouter.cancelAtomicSwap();
-        emit TradeCanceled(msg.sender, tradeId());
+        emit TradeCanceled(inceptor, tradeId());
+    }
+
+    function _matchTerms(
+        string memory tradeData_,
+        int256 position_,
+        int256 paymentAmount_,
+        string memory initialSettlementData_
+    ) private view {
+        if (position_ != position || paymentAmount_ != paymentAmount) revert TermsMismatch();
+        if (_hashTerms(tradeData_, initialSettlementData_)
+            != _hashTerms(tradeData, initialSettlementData)) revert TermsMismatch();
     }
 
     /**
@@ -240,6 +226,7 @@ contract FxAtomicSwap is ISDCTrade, IXMLRepresentableState {
      */
     function requestTradeTermination(
         string memory,
+        address,
         int256,
         string memory
     ) external pure override {
@@ -249,6 +236,7 @@ contract FxAtomicSwap is ISDCTrade, IXMLRepresentableState {
     /// @notice Rejects confirmation of an unsupported termination request.
     function confirmTradeTermination(
         string memory,
+        address,
         int256,
         string memory
     ) external pure override {
@@ -258,6 +246,7 @@ contract FxAtomicSwap is ISDCTrade, IXMLRepresentableState {
     /// @notice Rejects cancellation of an unsupported termination request.
     function cancelTradeTermination(
         string memory,
+        address,
         int256,
         string memory
     ) external pure override {

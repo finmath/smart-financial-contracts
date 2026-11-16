@@ -1,152 +1,154 @@
 // SPDX-License-Identifier: CC0-1.0
 pragma solidity >=0.7.0;
 
-/*------------------------------------------- DESCRIPTION ---------------------------------------------------------------------------------------*/
-
 /**
- * @title ERC6123 Smart Derivative Contract - Trade Events and Trade Functions.
- * @dev Interface specification for a Smart Derivative Contract - Trade Specific Part. See ISDC interface documentation for a more detailed description.
+ * @title ERC-6123 Smart Derivative Contract - Trade Events and Trade Functions.
+ * @notice Trade parties are explicit and independent of the transaction caller.
+ * @dev Inception, confirmation and cancellation describe the same fixed participants
+ *      and identical terms. Signed amounts always use the inceptor's perspective.
+ *      Termination amounts always use the requesting party's perspective.
+ *      Implementations must validate both the lifecycle state and authorization for
+ *      the relevant participant. Supplying a party address does not grant authority.
+ *      Operator approval and other authorization mechanisms are implementation-defined.
  */
-
 interface ISDCTrade {
-
-    /*------------------------------------------- EVENTS ---------------------------------------------------------------------------------------*/
-
-    /* Events related to trade inception */
-
     /**
-     * @dev Emitted  when a new trade is incepted from a eligible counterparty
-     * @param initiator is the address from which trade was incepted
-     * @param withParty is the party the inceptor wants to trade with
-     * @param tradeId is the trade ID (e.g. generated internally)
-     * @param tradeData a description of the trade specification e.g. in xml format, suggested structure - see assets/eip-6123/doc/sample-tradedata-filestructure.xml
-     * @param position is the position the inceptor has in that trade, may be negative (sell) or positive (buy)
-     * @param paymentAmount is the payment amount which can be positive or negative (viewed from the inceptor)
-     * @param initialSettlementData the initial settlement data (e.g. initial market data at which trade was incepted)
+     * @notice Records a trade proposal from the represented inceptor.
+     * @param initiator The economic inceptor, which may differ from msg.sender.
+     * @param withParty The fixed counterparty.
+     * @param tradeId The identifier of the trade.
+     * @param tradeData The immutable trade specification.
+     * @param position Signed position from the inceptor's perspective.
+     * @param paymentAmount Signed payment from the inceptor's perspective.
+     * @param initialSettlementData The immutable initial settlement data.
      */
     event TradeIncepted(address initiator, address withParty, string tradeId, string tradeData, int256 position, int256 paymentAmount, string initialSettlementData);
 
-    /**
-     * @dev Emitted when an incepted trade is confirmed by the opposite counterparty
-     * @param confirmer the confirming party
-     * @param tradeId the trade identifier
-     */
+    /// @notice The represented counterparty confirmed the stored inception.
     event TradeConfirmed(address confirmer, string tradeId);
 
-    /**
-     * @dev Emitted when an incepted trade is canceled by the incepting counterparty
-     * @param initiator is the address from which trade was canceled
-     * @param tradeId the trade identifier
-     */
+    /// @notice The represented inceptor canceled the unconfirmed trade.
     event TradeCanceled(address initiator, string tradeId);
 
-    /* Events related to activation and termination */
-
-    /**
-     * @dev Emitted when a confirmed trade is set to active - e.g. when termination fee amounts are provided
-     * @param tradeId the trade identifier of the activated trade
-     */
     event TradeActivated(string tradeId);
-
-    /**
-     * @dev Emitted when an active trade is terminated
-     * @param tradeId the trade identifier of the activated trade
-     * @param cause string holding data associated with the termination, e.g. transactionData upon a failed transaction
-     */
     event TradeTerminated(string tradeId, string cause);
 
-    /* Events related to trade termination */
-
-    /**
-     * @dev Emitted when a counterparty proactively requests an early termination of the underlying trade
-     * @param initiator the address of the requesting party
-     * @param terminationPayment an agreed termination amount (viewed from the requester)
-     * @param tradeId the trade identifier which is supposed to be terminated
-     * @param terminationTerms termination terms
-     */
+    /// @notice A represented participant requested termination; payment uses its perspective.
     event TradeTerminationRequest(address initiator, string tradeId, int256 terminationPayment, string terminationTerms);
 
-    /**
-     * @dev Emitted when early termination request is confirmed by the opposite party
-     * @param confirmer the party which confirms the trade termination
-     * @param tradeId the trade identifier which is supposed to be terminated
-     * @param terminationPayment an agreed termination amount (viewed from the confirmer, negative of the value provided by the requester)
-     * @param terminationTerms termination terms
-     */
+    /// @notice The opposite participant confirmed; payment retains the requester's perspective.
     event TradeTerminationConfirmed(address confirmer, string tradeId, int256 terminationPayment, string terminationTerms);
 
-    /**
-     * @dev Emitted when a counterparty cancels its requests an early termination of the underlying trade
-     * @param initiator the address of the requesting party
-     * @param tradeId the trade identifier which is supposed to be terminated
-     * @param terminationTerms termination terms
-     */
+    /// @notice The represented requester withdrew its termination proposal.
     event TradeTerminationCanceled(address initiator, string tradeId, string terminationTerms);
 
-    /*------------------------------------------- FUNCTIONALITY ---------------------------------------------------------------------------------------*/
-
-    /// Trade Inception
+    /**
+     * @notice Incepts a trade for the explicit parties and stores its immutable terms.
+     * @dev Requires authorization for the inceptor and a valid lifecycle state.
+     *      msg.sender identifies the caller, not either economic participant.
+     * @param inceptor The participant proposing the trade.
+     * @param counterparty The opposite participant whose confirmation is required.
+     * @param tradeData The trade specification, for example XML.
+     * @param position Signed position from the inceptor's perspective.
+     * @param paymentAmount Signed payment from the inceptor's perspective.
+     * @param initialSettlementData The initial settlement or market data.
+     * @return tradeId The identifier of the incepted trade.
+     */
+    function inceptTrade(
+        address inceptor,
+        address counterparty,
+        string memory tradeData,
+        int256 position,
+        int256 paymentAmount,
+        string memory initialSettlementData
+    ) external returns (string memory tradeId);
 
     /**
-     * @notice Incepts a trade, stores trade data
-     * @dev emits a {TradeIncepted} event
-     * @param withParty is the party the inceptor wants to trade with
-     * @param tradeData a description of the trade specification e.g. in xml format, suggested structure - see assets/eip-6123/doc/sample-tradedata-filestructure.xml
-     * @param position is the position the inceptor has in that trade, may be negative (sell) or positive (buy)
-     * @param paymentAmount is the payment amount which can be positive or negative (viewed from the inceptor)
-     * @param initialSettlementData the initial settlement data (e.g. initial market data at which trade was incepted)
-     * @return the tradeId uniquely determining this trade.
+     * @notice Confirms the exact stored inception on behalf of its counterparty.
+     * @dev Requires authorization for the counterparty. Every argument must match
+     *      inception, including participant order and both signed amounts. Confirmation
+     *      does not reverse the parties or negate the amounts.
+     * @param inceptor The original inceptor.
+     * @param counterparty The original counterparty.
+     * @param tradeData The original trade specification.
+     * @param position The original signed position, viewed from the inceptor.
+     * @param paymentAmount The original signed payment, viewed from the inceptor.
+     * @param initialSettlementData The original initial settlement data.
      */
-    function inceptTrade(address withParty, string memory tradeData, int256 position, int256 paymentAmount, string memory initialSettlementData) external returns (string memory);
+    function confirmTrade(
+        address inceptor,
+        address counterparty,
+        string memory tradeData,
+        int256 position,
+        int256 paymentAmount,
+        string memory initialSettlementData
+    ) external;
 
     /**
-     * @notice Performs a matching of provided trade data and settlement data of a previous trade inception
-     * @dev emits a {TradeConfirmed} event if trade data match and emits a {TradeActivated} if trade becomes active or {TradeTerminated} if not
-     * @param withParty is the party the confirmer wants to trade with
-     * @param tradeData a description of the trade specification e.g. in xml format, suggested structure - see assets/eip-6123/doc/sample-tradedata-filestructure.xml
-     * @param position is the position the confirmer has in that trade (negative of the position the inceptor has in the trade)
-     * @param paymentAmount is the payment amount which can be positive or negative (viewed from the confirmer, negative of the inceptor's view)
-     * @param initialSettlementData the initial settlement data (e.g. initial market data at which trade was incepted)
+     * @notice Cancels an unconfirmed trade on behalf of its inceptor.
+     * @dev Requires authorization for the inceptor. Every argument must match the
+     *      stored inception. A confirmed or already canceled proposal cannot be canceled.
+     * @param inceptor The original inceptor.
+     * @param counterparty The original counterparty.
+     * @param tradeData The original trade specification.
+     * @param position The original signed position, viewed from the inceptor.
+     * @param paymentAmount The original signed payment, viewed from the inceptor.
+     * @param initialSettlementData The original initial settlement data.
      */
-     function confirmTrade(address withParty, string memory tradeData, int256 position, int256 paymentAmount, string memory initialSettlementData) external;
+    function cancelTrade(
+        address inceptor,
+        address counterparty,
+        string memory tradeData,
+        int256 position,
+        int256 paymentAmount,
+        string memory initialSettlementData
+    ) external;
 
     /**
-     * @notice Performs a matching of provided trade data and settlement data of a previous trade inception. Required to be called by inceptor.
-     * @dev emits a {TradeCanceled} event if trade data match and msg.sender agrees with the party that incepted the trade.
-     * @param withParty is the party the inceptor wants to trade with
-     * @param tradeData a description of the trade specification e.g. in xml format, suggested structure - see assets/eip-6123/doc/sample-tradedata-filestructure.xml
-     * @param position is the position the inceptor has in that trade, may be negative (sell) or positive (buy)
-     * @param paymentAmount is the payment amount which can be positive or negative (viewed from the inceptor)
-     * @param initialSettlementData the initial settlement data (e.g. initial market data at which trade was incepted)
+     * @notice Requests termination for an explicit participant in the identified trade.
+     * @dev Requires authorization for requestingParty. The trade determines its opposite
+     *      participant. The complete proposal is stored for confirmation or cancellation.
+     * @param tradeId The trade to terminate.
+     * @param requestingParty The participant proposing termination.
+     * @param terminationPayment Signed payment from requestingParty's perspective.
+     * @param terminationTerms The proposed termination terms.
      */
-    function cancelTrade(address withParty, string memory tradeData, int256 position, int256 paymentAmount, string memory initialSettlementData) external;
-
-    /// Trade termination
-
-    /**
-     * @notice Called from a counterparty to request a mutual termination
-     * @dev emits a {TradeTerminationRequest}
-     * @param tradeId the trade identifier which is supposed to be terminated
-     * @param terminationPayment an agreed termination amount (viewed from the requester)
-     * @param terminationTerms the termination terms to be stored on chain.
-     */
-    function requestTradeTermination(string memory tradeId, int256 terminationPayment, string memory terminationTerms) external;
+    function requestTradeTermination(
+        string memory tradeId,
+        address requestingParty,
+        int256 terminationPayment,
+        string memory terminationTerms
+    ) external;
 
     /**
-     * @notice Called from a party to confirm an incepted termination, which might trigger a final settlement before trade gets closed
-     * @dev emits a {TradeTerminationConfirmed}
-     * @param tradeId the trade identifier which is supposed to be terminated
-     * @param terminationPayment an agreed termination amount (viewed from the confirmer, negative of the value provided by the requester)
-     * @param terminationTerms the termination terms to be stored on chain.
+     * @notice Confirms a termination proposal on behalf of the opposite participant.
+     * @dev Requires authorization for the stored participant opposite requestingParty.
+     *      All arguments must match the request, including the unchanged payment sign.
+     * @param tradeId The original trade identifier.
+     * @param requestingParty The original termination requester.
+     * @param terminationPayment The original payment, viewed from requestingParty.
+     * @param terminationTerms The original termination terms.
      */
-    function confirmTradeTermination(string memory tradeId, int256 terminationPayment, string memory terminationTerms) external;
+    function confirmTradeTermination(
+        string memory tradeId,
+        address requestingParty,
+        int256 terminationPayment,
+        string memory terminationTerms
+    ) external;
 
     /**
-     * @notice Called from a party to confirm an incepted termination, which might trigger a final settlement before trade gets closed
-     * @dev emits a {TradeTerminationCanceled}
-     * @param tradeId the trade identifier which is supposed to be terminated
-     * @param terminationPayment an agreed termination amount (viewed from the requester)
-     * @param terminationTerms the termination terms
+     * @notice Withdraws a pending termination proposal on behalf of its requester.
+     * @dev Requires authorization for requestingParty. All arguments must exactly match
+     *      the pending request. A canceled or completed proposal cannot be consumed again.
+     * @param tradeId The original trade identifier.
+     * @param requestingParty The original termination requester.
+     * @param terminationPayment The original payment, viewed from requestingParty.
+     * @param terminationTerms The original termination terms.
      */
-    function cancelTradeTermination(string memory tradeId, int256 terminationPayment, string memory terminationTerms) external;
+    function cancelTradeTermination(
+        string memory tradeId,
+        address requestingParty,
+        int256 terminationPayment,
+        string memory terminationTerms
+    ) external;
 }

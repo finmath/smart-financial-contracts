@@ -67,10 +67,18 @@ The router stores only one active flag per swap.
 The swap is the single source of tokens, parties, and terms.
 end note
 
+note over PartyA, Swap
+A participant may call setTradeOperator(operator, true) on this swap.
+That operator may submit the following calls on behalf of that participant.
+Caller identity does not change either participant or the amount perspective.
+Approval is checked at execution and may be revoked with false.
+ERC-20 allowances alone do not authorize trade actions.
+end note
+
 == ERC-6123 inception by Party A ==
 
-PartyA -> Swap ++ : inceptTrade(\n  PartyB, tradeData,\n  +BASE_QTY, -QUOTE_QTY, settlementData\n)
-Swap -> Swap : validate fixed parties\nvalidate nonzero, opposite-sign legs
+PartyA -> Swap ++ : inceptTrade(\n  PartyA, PartyB, tradeData,\n  +BASE_QTY, -QUOTE_QTY, settlementData\n)
+Swap -> Swap : validate explicit fixed parties\nauthorize caller for PartyA\nvalidate nonzero, opposite-sign legs
 Swap -> Swap : inceptor = PartyA\nposition = +BASE_QTY\npaymentAmount = -QUOTE_QTY\nstore textual terms\nphase = Incepted
 Swap --> PartyA -- : tradeId = "1"\nTradeIncepted
 
@@ -84,8 +92,8 @@ end note
 
 alt Party B confirms successfully before cancellation
 
-PartyB -> Swap ++ : confirmTrade(\n  PartyA, same tradeData,\n  -BASE_QTY, +QUOTE_QTY, same settlementData\n)
-Swap -> Swap : verify counterparty, negated amounts, and terms
+PartyB -> Swap ++ : confirmTrade(\n  PartyA, PartyB, same tradeData,\n  +BASE_QTY, -QUOTE_QTY, same settlementData\n)
+Swap -> Swap : authorize caller for PartyB\nmatch both parties, original signed amounts, and terms
 Swap -> Swap : phase = Settled\n(checks-effects-interactions)
 Swap -> Router ++ : settleAtomicSwap(\n  BaseToken, QuoteToken, PartyA, PartyB,\n  +BASE_QTY, -QUOTE_QTY\n)
 
@@ -136,8 +144,8 @@ end note
 
 else Party A cancels before successful confirmation
 
-PartyA -> Swap ++ : cancelTrade(\n  PartyB, same tradeData,\n  +BASE_QTY, -QUOTE_QTY, same settlementData\n)
-Swap -> Swap : require phase == Incepted\nverify inceptor and all original terms
+PartyA -> Swap ++ : cancelTrade(\n  PartyA, PartyB, same tradeData,\n  +BASE_QTY, -QUOTE_QTY, same settlementData\n)
+Swap -> Swap : require phase == Incepted\nauthorize caller for PartyA\nmatch both parties and all original terms
 Swap -> Swap : phase = Canceled\n(checks-effects-interactions)
 Swap -> Router ++ : cancelAtomicSwap()
 Router -> Router : require activeSwap[Swap]\nactiveSwap[Swap] = false

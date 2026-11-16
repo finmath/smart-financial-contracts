@@ -1,9 +1,10 @@
 # ERC-6123 specification and reference implementation
 
-This package is synchronized from `ERCS/erc-6123.md` and `assets/erc-6123/`
-in the local `~/git/ERCs` checkout. The latest commit affecting those paths is
+This package started from `ERCS/erc-6123.md` and `assets/erc-6123/`
+in `~/git/ERCs` at
 [`56c2308c8d69e75e417bc2d2d551ff6f463ec18d`](https://github.com/finmath/ERCs/commit/56c2308c8d69e75e417bc2d2d551ff6f463ec18d).
-The specification content and five interface files match that revision.
+It now develops the explicit-party draft revision described below. This revision
+has not been copied back to that source checkout.
 
 The local build uses Node.js 22.13 or newer, Hardhat 2, Solidity 0.8.24 and
 OpenZeppelin 5.0.2. A lockfile fixes the dependency versions. Solidity 0.8.24 is
@@ -11,8 +12,48 @@ required by the included FX reference example; its `ISDCTrade` import is adjuste
 for its directory within this package. Package metadata points to this repository.
 
 The maintained [FX Atomic Swap demo](../../examples/fx-atomic-swap/README.md)
-includes additional lifecycle checks and tests. The example under this package's
-`contracts/examples/` is the reference copy accompanying the imported standard.
+provides a Foundry lifecycle suite and renderer walkthrough. Its implementation and
+the FX reference copy under `contracts/examples/` use the same trade conventions.
+
+## Explicit-party draft revision
+
+All three initiation methods take the same complete tuple:
+
+```solidity
+inceptTrade(inceptor, counterparty, tradeData, position, paymentAmount, initialSettlementData);
+confirmTrade(inceptor, counterparty, tradeData, position, paymentAmount, initialSettlementData);
+cancelTrade(inceptor, counterparty, tradeData, position, paymentAmount, initialSettlementData);
+```
+
+The inceptor's amounts and participant order remain unchanged at confirmation.
+Each termination method takes `(tradeId, requestingParty, terminationPayment,
+terminationTerms)`, with the payment always viewed from the original requesting
+party. These are breaking ABI and amount-convention changes; use the updated
+interfaces and examples together. Legacy derivatives in `../../derivatives/` retain
+their older ABI.
+
+The reference implementations inherit `TradeAuthorizable`. A participant can
+submit its own trade actions or authorize an operator on that particular contract:
+
+```solidity
+// Sent by the participant that grants the authority:
+setTradeOperator(operator, true);
+// Sent by that same participant to revoke it:
+setTradeOperator(operator, false);
+```
+
+An approval covers all six trade methods for the granting participant's role on
+that instance. Inception and cancellation require the inceptor's authority;
+confirmation requires the counterparty's authority. Termination request/cancellation
+require the requester's authority; confirmation requires the opposite party's
+independent authority. Approving one party's operator grants no authority for the
+other party. Revocation is checked when each action executes, and token allowances
+and settlement callbacks retain separate authorization.
+
+The shared trade interface does not prescribe this approval mechanism. An
+implementation may use a different authenticated operator or signature policy.
+Events continue to identify the economic participants, including when operators
+submit transactions. Transfer destinations remain the stored parties.
 
 Run from this directory:
 
@@ -42,13 +83,15 @@ We provide the essential steps to compile the contracts and run the provided uni
 
 #### Implementations
 
+- `contracts/TradeAuthorizable.sol` - Per-contract, revocable operator approvals used by the reference implementations
 - `contracts/SDCSingleTrade.sol` - SDC abstract contract for an OTC Derivative (single trade case only)
 - `contracts/SDCSingleTradePledgedBalance.sol` - SDC full implementation for an OTC Derivative (single trade case only)
 - `contracts/ERC20Settlement.sol` - Mintable ERC-20 settlement token implementing `IAsyncTransfer` for unit tests
 
 #### Tests
 
-- `test/SDCTests.js` - Unit tests for the life-cycle of the sdc implementation
+- `test/SDCTests.js` - SDC lifecycle and balance tests
+- `test/TradeOperatorsTest.js` - Delegated trades, exact matching, revocation and replay checks
 
 ### Compile and run tests with Hardhat
 
@@ -80,6 +123,13 @@ npx hardhat test
 - `solidity-coverage`: This library gives you coverage reports on unit tests with the help of Istanbul.
 
 ## Version history / release notes
+
+### Unreleased
+
+- Explicit trade participants and termination requester, independent of the caller.
+- Identical participant order and signed amounts across proposal, confirmation and cancellation.
+- Complete context matching and per-contract operator approvals in the reference implementations.
+- The SDC trade ID is no longer mutable through a public setter; settlement callbacks require the configured token.
 
 ### 0.8.0
 

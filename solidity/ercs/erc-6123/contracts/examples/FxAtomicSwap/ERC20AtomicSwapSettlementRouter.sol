@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: CC0-1.0
 pragma solidity ^0.8.24;
 
-/**
- * @notice Minimal ERC-20 interface used by the settlement router.
- */
+/// @notice Minimal ERC-20 interface used by the settlement router.
 interface IERC20RouterToken {
     function transferFrom(address from, address to, uint256 value) external returns (bool);
 }
 
-/**
- * @notice Common settlement interface called by factory-created FX swaps.
- */
+/// @notice Synchronous settlement and cancellation interface called by factory-created FX swaps.
 interface IAtomicSwapSettlement {
+    /// @notice Revokes the calling swap's unused settlement authorization.
+    function cancelAtomicSwap() external;
+
+    /// @notice Completes both token legs before returning, or reverts the entire settlement.
     function settleAtomicSwap(
         IERC20RouterToken baseToken,
         IERC20RouterToken quoteToken,
@@ -26,8 +26,11 @@ interface IAtomicSwapSettlement {
  * @title ERC-20 Atomic Swap Settlement Router
  * @notice Common ERC-20 spender for all swaps created by one factory.
  * @dev Token holders approve this router once. The router stores only whether a
- *      factory-created swap still has an unused settlement authorization. The
+ *      factory-created swap still has an unused, uncanceled settlement authorization. The
  *      immutable swap itself is the source of its tokens, parties, and amounts.
+ *      Supported tokens transfer exactly the requested amount on success.
+ *      Fee-on-transfer and rebasing tokens are outside this example's scope;
+ *      the router does not verify balance deltas.
  */
 contract ERC20AtomicSwapSettlementRouter is IAtomicSwapSettlement {
     error InvalidFactory();
@@ -58,6 +61,18 @@ contract ERC20AtomicSwapSettlementRouter is IAtomicSwapSettlement {
         if (swap.code.length == 0 || activeSwap[swap]) revert InvalidSwap();
 
         activeSwap[swap] = true;
+    }
+
+    /**
+     * @notice Revokes the calling swap's settlement authorization without moving tokens.
+     * @dev Only a registered, active swap can revoke its own authorization. The
+     *      trusted swap checks the inceptor and matching terms before calling.
+     *      ERC-20 allowances remain available for other swaps using this router.
+     */
+    function cancelAtomicSwap() external override {
+        if (!activeSwap[msg.sender]) revert InactiveSwap();
+
+        activeSwap[msg.sender] = false;
     }
 
     /**
@@ -121,7 +136,7 @@ contract ERC20AtomicSwapSettlementRouter is IAtomicSwapSettlement {
     }
 
     /**
-     * @notice Calls `transferFrom` while supporting ERC-20 tokens that do not revert, but return `false` or no data.
+     * @notice Calls `transferFrom`, accepting true or no return data and rejecting false or a revert.
      * @param token ERC-20 token to call.
      * @param from Token owner that approved this router.
      * @param to Token recipient.

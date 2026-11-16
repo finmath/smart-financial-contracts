@@ -9,10 +9,20 @@ The scenario is:
 - `BASE` has 18 decimals.
 - `QUOTE` has 6 decimals.
 - Party A incepts a trade to **receive 1 BASE** and **pay 1.10 QUOTE**.
-- Party B confirms the exact opposite view.
+- Party B confirms the same parties and amounts, expressed from Party A's perspective.
 - Confirmation transfers both ERC-20 legs atomically through the shared `ERC20AtomicSwapSettlementRouter`.
 
 This example supports synchronous ERC-20 tokens that transfer the exact requested amount. Fee-on-transfer and rebasing tokens are outside its supported scope. The router checks call success and return data; it does not measure balance changes or enforce this token assumption on-chain.
+
+The ERC-6123 trade methods take `inceptor` and `counterparty` explicitly. Inception,
+confirmation and cancellation repeat the same parties, signed amounts and text fields.
+A participant can submit its own action or approve an operator with
+`setTradeOperator(operator, true)` on this swap. Inception and cancellation require
+the inceptor's authority; confirmation requires the counterparty's authority.
+Approvals are per participant and per swap, can be revoked with `false`, and are
+checked when the action executes. ERC-20 router allowances alone do not authorize
+a trade. Events and token transfers identify the participants, even when an operator
+submits the transaction. Factory creation still requires a named participant.
 
 Each swap handles one quote. The inceptor can withdraw an open quote with the ERC-6123 `cancelTrade` method. There is no clock-based expiry: the quote remains open until a confirmation or cancellation succeeds, with transaction order deciding the outcome if both are submitted. A settled or canceled swap cannot be reused; create another swap through the same factory for a new quote. The shared router and any remaining allowances can be reused.
 
@@ -98,7 +108,7 @@ cd solidity/examples/fx-atomic-swap
 
 This Foundry project includes the swap contracts, two Solidity test files,
 and its compiler configuration. `contracts/ISDCTrade.sol` imports the shared
-[ERC-6123 interface](../../ercs/erc-6123/contracts/ISDCTrade.sol) from this checkout;
+[ERC-6123 interface](../../ercs/erc-6123/contracts/ISDCTrade.sol) and `FxAtomicSwap.sol` imports the shared operator-authorization helper from this checkout;
 keep the repository layout when building the example. Foundry 1.5.0 and Solidity
 0.8.24 are used in CI. The tests require no downloaded Solidity dependencies,
 running chain or renderer:
@@ -442,7 +452,8 @@ export TRADE_DATA="FX spot: Party A receives 1 BASE and pays 1.10 QUOTE"
 export SETTLEMENT_DATA="Atomic payment-versus-payment at confirmation"
 
 cast send "$SWAP" \
-  "inceptTrade(address,string,int256,int256,string)" \
+  "inceptTrade(address,address,string,int256,int256,string)" \
+  "$PARTY_A" \
   "$PARTY_B" \
   "$TRADE_DATA" \
   "$BASE_QTY" \
@@ -504,7 +515,8 @@ To withdraw this quote, run the following **before step 11**. Party A must repea
 
 ```bash
 cast send "$SWAP" \
-  "cancelTrade(address,string,int256,int256,string)" \
+  "cancelTrade(address,address,string,int256,int256,string)" \
+  "$PARTY_A" \
   "$PARTY_B" \
   "$TRADE_DATA" \
   "$BASE_QTY" \
@@ -522,24 +534,50 @@ Reload the swap's XML view to see the canceled phase with the inception terms re
 
 **After cancellation, skip steps 11–13 for this swap.** Confirmation and another inception will revert. To run the settlement path, repeat steps 7–10 with a new swap, then proceed to step 11. The existing router allowances can be reused because cancellation did not consume them.
 
+### 10.2. Optional: submit confirmation through an operator
+
+Party B can authorize the deployer account to submit its confirmation:
+
+```bash
+cast send "$SWAP" "setTradeOperator(address,bool)" "$DEPLOYER" true \
+  --rpc-url "$RPC_URL" --private-key "$PARTY_B_PK"
+```
+
+For step 11, use `--private-key "$DEPLOYER_PK"` instead of `"$PARTY_B_PK"`.
+Keep all explicit trade arguments unchanged. The deployer receives no tokens;
+the router still transfers between Party A and Party B. The operator may act for
+Party B only on this swap; Party A would need to grant its own approval for an
+operator to incept or cancel on its behalf.
+
+To revoke the approval, Party B submits:
+
+```bash
+cast send "$SWAP" "setTradeOperator(address,bool)" "$DEPLOYER" false \
+  --rpc-url "$RPC_URL" --private-key "$PARTY_B_PK"
+```
+
+After revocation, the operator's pending confirmation cannot execute. Party B can
+still submit directly, or grant a new approval.
+
 ### 11. Confirm as Party B and settle both legs
 
-Party B must supply the exact opposite signed amounts and identical text fields:
+Party B must repeat the exact inception arguments. The amounts retain Party A's perspective; they are not negated:
 
 ```bash
 cast send "$SWAP" \
-  "confirmTrade(address,string,int256,int256,string)" \
+  "confirmTrade(address,address,string,int256,int256,string)" \
   "$PARTY_A" \
+  "$PARTY_B" \
   "$TRADE_DATA" \
-  "-$BASE_QTY" \
-  "$QUOTE_QTY" \
+  "$BASE_QTY" \
+  "-$QUOTE_QTY" \
   "$SETTLEMENT_DATA" \
   --rpc-url "$RPC_URL" --private-key "$PARTY_B_PK"
 ```
 
 Within this single confirmation transaction:
 
-1. `FxAtomicSwap` verifies the counterparty, negated amounts, and matching text terms.
+1. `FxAtomicSwap` verifies the caller's authority for Party B and matches both explicit parties, the original signed amounts, and the text terms.
 2. It changes `phase` to `Settled` before the external call.
 3. The router consumes `activeSwap[SWAP]`.
 4. The router transfers 1 BASE from Party B to Party A.

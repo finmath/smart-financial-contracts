@@ -45,8 +45,8 @@ describe("FixedRateBond with local demo integrations", function () {
         const { bond, issuer, buyer } = f;
         const id = await bond.tradeId();
         const amount = await bond.finalRedemptionAmount();
-        await bond.connect(issuer).requestTradeTermination(id, -amount, terms);
-        await bond.connect(buyer).confirmTradeTermination(id, amount, terms);
+        await bond.connect(issuer).requestTradeTermination(id, issuer.address, -amount, terms);
+        await bond.connect(buyer).confirmTradeTermination(id, issuer.address, -amount, terms);
         return { id, amount, terms };
     }
 
@@ -99,10 +99,10 @@ describe("FixedRateBond with local demo integrations", function () {
 
         await advanceTo(ethers, DEMO_DATES.settlement);
         const hash = await bond.termsHash();
-        await bond.connect(issuer).inceptTrade(buyer.address, hash, terms.initialAggregateAmount, 0, "");
+        await bond.connect(issuer).inceptTrade(issuer.address, buyer.address, hash, -terms.initialAggregateAmount, await bond.settlementAmount(), "");
         expect(await bond.tradeStatus()).to.equal(TRADE.incepted);
         expect(await token.balanceOf(issuer.address)).to.equal(3n);
-        await bond.connect(buyer).confirmTrade(issuer.address, hash, terms.initialAggregateAmount, 0, "");
+        await bond.connect(buyer).confirmTrade(issuer.address, buyer.address, hash, -terms.initialAggregateAmount, await bond.settlementAmount(), "");
         expect(await bond.agreedTermsHash()).to.equal(hash);
         expect(await bond.tradeStatus()).to.equal(TRADE.confirmed);
         expect(await token.totalSupply()).to.equal(3n);
@@ -117,7 +117,7 @@ describe("FixedRateBond with local demo integrations", function () {
         expect(await token.balanceOf(buyer.address)).to.equal(3n);
         expect(await cash.balanceOf(issuer.address)).to.equal(129_552n);
         expect(await cash.balanceOf(buyer.address)).to.equal(70_448n);
-        await expect(bond.connect(issuer).requestTradeTermination(await bond.tradeId(), -30_003n, "maturity"))
+        await expect(bond.connect(issuer).requestTradeTermination(await bond.tradeId(), issuer.address, -30_003n, "maturity"))
             .to.be.revertedWithCustomError(bond, "NotMatured");
 
         await advanceTo(ethers, DEMO_DATES.firstCoupon);
@@ -139,52 +139,173 @@ describe("FixedRateBond with local demo integrations", function () {
         expect(await cash.balanceOf(issuer.address)).to.equal(98_622n);
         expect(await cash.balanceOf(buyer.address)).to.equal(101_378n);
         expect(await cash.balanceOf(payment.target)).to.equal(0n);
-        await expect(bond.connect(issuer).requestTradeTermination(await bond.tradeId(), -30_003n, "maturity"))
+        await expect(bond.connect(issuer).requestTradeTermination(await bond.tradeId(), issuer.address, -30_003n, "maturity"))
             .to.be.revertedWithCustomError(bond, "InvalidPositionState");
     });
 
-    it("requires the right parties and matching terms before enabling settlement", async function () {
-        const { issuer, buyer, outsider, bond, token, terms } = f;
-        const hash = await bond.termsHash();
-        await expect(bond.connect(outsider).inceptTrade(buyer.address, hash, terms.initialAggregateAmount, 0, ""))
-            .to.be.revertedWithCustomError(bond, "NotIssuer");
-        await expect(bond.connect(issuer).inceptTrade(buyer.address, ZeroHash, terms.initialAggregateAmount, 0, ""))
+    it("requires the right parties and every inception field before enabling settlement", async function () {
+        const { issuer, buyer, outsider, bond, token } = f;
+        const args = await f.tradeArguments("initial market data");
+        await expect(bond.connect(outsider).inceptTrade(...args))
+            .to.be.revertedWithCustomError(bond, "UnauthorizedTradeCaller")
+            .withArgs(outsider.address, issuer.address);
+        const wrongHash = [...args]; wrongHash[2] = ZeroHash;
+        await expect(bond.connect(issuer).inceptTrade(...wrongHash))
             .to.be.revertedWithCustomError(bond, "TermsMismatch");
-        await bond.connect(issuer).inceptTrade(buyer.address, hash, terms.initialAggregateAmount, 0, "");
-        await expect(bond.connect(outsider).confirmTrade(issuer.address, hash, terms.initialAggregateAmount, 0, ""))
-            .to.be.revertedWithCustomError(bond, "NotBuyer");
-        await expect(bond.connect(buyer).confirmTrade(issuer.address, ZeroHash, terms.initialAggregateAmount, 0, ""))
-            .to.be.revertedWithCustomError(bond, "TermsMismatch");
-        await expect(bond.connect(buyer).confirmTrade(outsider.address, hash, terms.initialAggregateAmount, 0, ""))
-            .to.be.revertedWithCustomError(bond, "InvalidCounterparty");
-        await expect(bond.connect(buyer).confirmTrade(issuer.address, hash, terms.initialAggregateAmount + 1n, 0, ""))
+        const invalidAmount = [...args]; invalidAmount[4] = 0;
+        await expect(bond.connect(issuer).inceptTrade(...invalidAmount))
             .to.be.revertedWithCustomError(bond, "InvalidAmount");
+        await bond.connect(issuer).inceptTrade(...args);
+        await expect(bond.connect(issuer).inceptTrade(...args))
+            .to.be.revertedWithCustomError(bond, "InvalidTradeStatus");
+        await expect(bond.connect(outsider).confirmTrade(...args))
+            .to.be.revertedWithCustomError(bond, "UnauthorizedTradeCaller")
+            .withArgs(outsider.address, buyer.address);
+
+        const changes = [
+            [0, outsider.address, "InvalidCounterparty"],
+            [1, outsider.address, "InvalidCounterparty"],
+            [2, ZeroHash, "TermsMismatch"],
+            [3, -args[3], "InvalidAmount"],
+            [4, -args[4], "InvalidAmount"],
+            [5, "changed initial data", "TermsMismatch"]
+        ];
+        for (const [index, value, error] of changes) {
+            const changed = [...args]; changed[index] = value;
+            await expect(bond.connect(buyer).confirmTrade(...changed))
+                .to.be.revertedWithCustomError(bond, error);
+            await expect(bond.connect(issuer).cancelTrade(...changed))
+                .to.be.revertedWithCustomError(bond, error);
+        }
         await expect(bond.connect(buyer)[GENERATED_TRANSFER](await bond.currentTransferId(), 3n,
             issuer.address, buyer.address, "0x01", f.payment.target))
             .to.be.revertedWithCustomError(bond, "InvalidTradeStatus");
         expect(await bond.tradeStatus()).to.equal(TRADE.incepted);
         expect(await token.balanceOf(issuer.address)).to.equal(3n);
-        await bond.connect(buyer).confirmTrade(issuer.address, hash, terms.initialAggregateAmount, 0, "");
+        await bond.connect(buyer).confirmTrade(...args);
         expect(await bond.tradeStatus()).to.equal(TRADE.confirmed);
         expect(await token.totalSupply()).to.equal(3n);
         expect(await bond.assetToken()).to.equal(token.target);
-        await expect(bond.connect(buyer).confirmTrade(issuer.address, hash, terms.initialAggregateAmount, 0, ""))
+        await expect(bond.connect(buyer).confirmTrade(...args))
             .to.be.revertedWithCustomError(bond, "InvalidTradeStatus");
     });
 
-    it("cancels an unconfirmed agreement without moving either party's tokens", async function () {
-        const { issuer, buyer, outsider, bond, token, cash, terms } = f;
-        await bond.connect(issuer).inceptTrade(buyer.address, await bond.termsHash(), terms.initialAggregateAmount, 0, "");
-        await expect(bond.connect(outsider).cancelTrade(issuer.address, "", 0, 0, ""))
-            .to.be.revertedWithCustomError(bond, "NotTradeParty");
-        await bond.connect(buyer).cancelTrade(issuer.address, "", 0, 0, "");
+    it("allows only the issuer or its current operator to cancel the exact unconfirmed agreement", async function () {
+        const { issuer, buyer, outsider, bond, token, cash } = f;
+        const args = await f.tradeArguments();
+        await bond.connect(issuer).inceptTrade(...args);
+        for (const caller of [outsider, buyer]) {
+            await expect(bond.connect(caller).cancelTrade(...args))
+                .to.be.revertedWithCustomError(bond, "UnauthorizedTradeCaller");
+        }
+        await bond.connect(issuer).setTradeOperator(outsider.address, true);
+        await bond.connect(issuer).setTradeOperator(outsider.address, false);
+        await expect(bond.connect(outsider).cancelTrade(...args))
+            .to.be.revertedWithCustomError(bond, "UnauthorizedTradeCaller");
+        await bond.connect(issuer).setTradeOperator(outsider.address, true);
+        await expect(bond.connect(outsider).cancelTrade(...args))
+            .to.emit(bond, "TradeCanceled").withArgs(issuer.address, await bond.tradeId());
         expect(await bond.tradeStatus()).to.equal(TRADE.cancelled);
         expect(await token.balanceOf(issuer.address)).to.equal(3n);
         expect(await token.balanceOf(buyer.address)).to.equal(0n);
         expect(await cash.balanceOf(issuer.address)).to.equal(100_000n);
         expect(await cash.balanceOf(buyer.address)).to.equal(100_000n);
-        await expect(bond.connect(buyer).confirmTrade(issuer.address, await bond.termsHash(), terms.initialAggregateAmount, 0, ""))
-            .to.be.revertedWithCustomError(bond, "InvalidTradeStatus");
+        for (const [caller, method] of [[issuer, "inceptTrade"], [buyer, "confirmTrade"], [outsider, "cancelTrade"]]) {
+            await expect(bond.connect(caller)[method](...args))
+                .to.be.revertedWithCustomError(bond, "InvalidTradeStatus");
+        }
+    });
+
+    it("settles delegated agreement and redemption between the stored parties", async function () {
+        const { ethers, issuer, buyer, operator, outsider, bond, token, cash, payment } = f;
+        const args = await f.tradeArguments("delegated agreement");
+        const id = await bond.tradeId();
+        // Payment-adapter authority and standing allowances confer no trade authority.
+        await expect(bond.connect(operator).inceptTrade(...args))
+            .to.be.revertedWithCustomError(bond, "UnauthorizedTradeCaller");
+        await bond.connect(issuer).setTradeOperator(operator.address, true);
+        await expect(bond.connect(operator).inceptTrade(...args))
+            .to.emit(bond, "TradeIncepted").withArgs(issuer.address, buyer.address, id,
+                args[2], args[3], args[4], args[5]);
+        await expect(bond.connect(operator).confirmTrade(...args))
+            .to.be.revertedWithCustomError(bond, "UnauthorizedTradeCaller");
+        // An operator cannot grant authority on behalf of its represented party.
+        await bond.connect(operator).setTradeOperator(outsider.address, true);
+        await expect(bond.connect(outsider).confirmTrade(...args))
+            .to.be.revertedWithCustomError(bond, "UnauthorizedTradeCaller");
+        await bond.connect(buyer).setTradeOperator(outsider.address, true);
+        await bond.connect(buyer).setTradeOperator(outsider.address, false);
+        await expect(bond.connect(outsider).confirmTrade(...args))
+            .to.be.revertedWithCustomError(bond, "UnauthorizedTradeCaller");
+        await bond.connect(buyer).setTradeOperator(outsider.address, true);
+        await expect(bond.connect(outsider).confirmTrade(...args))
+            .to.emit(bond, "TradeConfirmed").withArgs(buyer.address, id);
+        await paySuccessfulAttempt(await startAssetAttempt(token, "delegated issuance"));
+        expect(await token.balanceOf(buyer.address)).to.equal(3n);
+        expect(await cash.balanceOf(issuer.address)).to.equal(129_552n);
+        expect(await cash.balanceOf(buyer.address)).to.equal(70_448n);
+        expect(await token.balanceOf(operator.address)).to.equal(0n);
+        expect(await token.balanceOf(outsider.address)).to.equal(0n);
+
+        await advanceTo(ethers, DEMO_DATES.maturity);
+        const amount = -(await bond.finalRedemptionAmount());
+        const terms = "delegated redemption";
+        await expect(bond.connect(outsider).requestTradeTermination(id, issuer.address, amount, terms))
+            .to.be.revertedWithCustomError(bond, "UnauthorizedTradeCaller");
+        await expect(bond.connect(operator).requestTradeTermination(id, buyer.address, amount, terms))
+            .to.be.revertedWithCustomError(bond, "InvalidCounterparty");
+        await expect(bond.connect(operator).requestTradeTermination(id, issuer.address, amount, terms))
+            .to.emit(bond, "TradeTerminationRequest").withArgs(issuer.address, id, amount, terms);
+        await expect(bond.connect(operator).confirmTradeTermination(id, issuer.address, amount, terms))
+            .to.be.revertedWithCustomError(bond, "UnauthorizedTradeCaller");
+        await expect(bond.connect(outsider).confirmTradeTermination(id, buyer.address, amount, terms))
+            .to.be.revertedWithCustomError(bond, "InvalidCounterparty");
+        await expect(bond.connect(outsider).confirmTradeTermination(id, issuer.address, amount, terms))
+            .to.emit(bond, "TradeTerminationConfirmed").withArgs(buyer.address, id, amount, terms);
+        await paySuccessfulAttempt(await startAssetAttempt(token, "delegated redemption", true));
+        expect(await bond.positionState()).to.equal(POSITION.repaid);
+        expect(await token.balanceOf(issuer.address)).to.equal(3n);
+        expect(await token.balanceOf(buyer.address)).to.equal(0n);
+        expect(await cash.balanceOf(issuer.address)).to.equal(99_549n);
+        expect(await cash.balanceOf(buyer.address)).to.equal(100_451n);
+        expect(await cash.balanceOf(payment.target)).to.equal(0n);
+        await expect(bond.connect(outsider).confirmTradeTermination(id, issuer.address, amount, terms))
+            .to.be.revertedWithCustomError(bond, "InvalidPositionState");
+    });
+
+    it("checks current requester delegation and complete context when withdrawing redemption", async function () {
+        const { ethers, issuer, buyer, operator, outsider, bond } = f;
+        await issueAndSettle();
+        await advanceTo(ethers, DEMO_DATES.maturity);
+        const id = await bond.tradeId();
+        const amount = -(await bond.finalRedemptionAmount());
+        const terms = "cancel delegated redemption";
+        await bond.connect(issuer).setTradeOperator(operator.address, true);
+        await bond.connect(buyer).setTradeOperator(outsider.address, true);
+        await bond.connect(operator).requestTradeTermination(id, issuer.address, amount, terms);
+        await expect(bond.connect(outsider).cancelTradeTermination(id, issuer.address, amount, terms))
+            .to.be.revertedWithCustomError(bond, "UnauthorizedTradeCaller");
+        for (const [changedId, requester, value, data, error] of [
+            ["another trade", issuer.address, amount, terms, "InvalidTradeData"],
+            [id, buyer.address, amount, terms, "InvalidCounterparty"],
+            [id, issuer.address, -amount, terms, "InvalidAmount"],
+            [id, issuer.address, amount, "changed terms", "RedemptionProposalMismatch"]
+        ]) {
+            await expect(bond.connect(operator).cancelTradeTermination(changedId, requester, value, data))
+                .to.be.revertedWithCustomError(bond, error);
+        }
+        await bond.connect(issuer).setTradeOperator(operator.address, false);
+        await expect(bond.connect(operator).cancelTradeTermination(id, issuer.address, amount, terms))
+            .to.be.revertedWithCustomError(bond, "UnauthorizedTradeCaller");
+        await bond.connect(issuer).setTradeOperator(operator.address, true);
+        await expect(bond.connect(operator).cancelTradeTermination(id, issuer.address, amount, terms))
+            .to.emit(bond, "TradeTerminationCanceled").withArgs(issuer.address, id, terms);
+        expect(await bond.redemptionProposal()).to.equal(ZeroHash);
+        expect(await bond.positionState()).to.equal(POSITION.outstanding);
+        await expect(bond.connect(outsider).confirmTradeTermination(id, issuer.address, amount, terms))
+            .to.be.revertedWithCustomError(bond, "InvalidPositionState");
+        await expect(bond.connect(operator).cancelTradeTermination(id, issuer.address, amount, terms))
+            .to.be.revertedWithCustomError(bond, "InvalidPositionState");
     });
 
     it("recovers from missing token allowances or balances without partially settling either leg", async function () {
@@ -281,53 +402,55 @@ describe("FixedRateBond with local demo integrations", function () {
         const id = await bond.tradeId();
         const amount = await bond.finalRedemptionAmount();
         const terms = "repay at contractual maturity";
-        await expect(bond.connect(issuer).requestTradeTermination(id, -amount, terms))
+        await expect(bond.connect(issuer).requestTradeTermination(id, issuer.address, -amount, terms))
             .to.be.revertedWithCustomError(bond, "InvalidPositionState");
         await issueAndSettle();
-        await expect(bond.connect(issuer).requestTradeTermination(id, -amount, terms))
+        await expect(bond.connect(issuer).requestTradeTermination(id, issuer.address, -amount, terms))
             .to.be.revertedWithCustomError(bond, "NotMatured");
         await advanceTo(ethers, DEMO_DATES.maturity);
-        await expect(bond.connect(buyer).requestTradeTermination(id, -amount, terms))
-            .to.be.revertedWithCustomError(bond, "NotIssuer");
-        await expect(bond.connect(buyer).confirmTradeTermination(id, amount, terms))
+        await expect(bond.connect(buyer).requestTradeTermination(id, issuer.address, -amount, terms))
+            .to.be.revertedWithCustomError(bond, "UnauthorizedTradeCaller");
+        await expect(bond.connect(buyer).confirmTradeTermination(id, issuer.address, -amount, terms))
             .to.be.revertedWithCustomError(bond, "InvalidPositionState");
-        await expect(bond.connect(issuer).requestTradeTermination("another trade", -amount, terms))
+        await expect(bond.connect(issuer).requestTradeTermination("another trade", issuer.address, -amount, terms))
             .to.be.revertedWithCustomError(bond, "InvalidTradeData");
-        await expect(bond.connect(issuer).requestTradeTermination(id, amount, terms))
+        await expect(bond.connect(issuer).requestTradeTermination(id, issuer.address, amount, terms))
             .to.be.revertedWithCustomError(bond, "InvalidAmount");
-        await expect(bond.connect(issuer).requestTradeTermination(id, -amount, terms))
+        await expect(bond.connect(issuer).requestTradeTermination(id, issuer.address, -amount, terms))
             .to.emit(bond, "TradeTerminationRequest").withArgs(issuer.address, id, -amount, terms);
         expect(await bond.positionState()).to.equal(POSITION.offered);
         const proposal = await bond.redemptionProposal();
         await expect(bond.connect(issuer)[GENERATED_TRANSFER](await bond.currentTransferId(), 3n,
             buyer.address, issuer.address, "0x01", payment.target))
             .to.be.revertedWithCustomError(bond, "InvalidPositionState");
-        await expect(bond.connect(issuer).confirmTradeTermination(id, amount, terms))
-            .to.be.revertedWithCustomError(bond, "NotBuyer");
-        await expect(bond.connect(buyer).confirmTradeTermination("another trade", amount, terms))
+        await expect(bond.connect(issuer).confirmTradeTermination(id, issuer.address, -amount, terms))
+            .to.be.revertedWithCustomError(bond, "UnauthorizedTradeCaller");
+        await expect(bond.connect(buyer).confirmTradeTermination("another trade", issuer.address, -amount, terms))
             .to.be.revertedWithCustomError(bond, "InvalidTradeData");
-        await expect(bond.connect(buyer).confirmTradeTermination(id, -amount, terms))
+        await expect(bond.connect(buyer).confirmTradeTermination(id, issuer.address, amount, terms))
             .to.be.revertedWithCustomError(bond, "InvalidAmount");
-        await expect(bond.connect(buyer).confirmTradeTermination(id, amount, "changed terms"))
+        await expect(bond.connect(buyer).confirmTradeTermination(id, issuer.address, -amount, "changed terms"))
             .to.be.revertedWithCustomError(bond, "RedemptionProposalMismatch");
-        await expect(bond.connect(outsider).cancelTradeTermination(id, amount, terms))
-            .to.be.revertedWithCustomError(bond, "NotTradeParty");
-        await expect(bond.connect(buyer).cancelTradeTermination(id, amount, "changed terms"))
+        await expect(bond.connect(outsider).cancelTradeTermination(id, issuer.address, -amount, terms))
+            .to.be.revertedWithCustomError(bond, "UnauthorizedTradeCaller");
+        await expect(bond.connect(buyer).cancelTradeTermination(id, issuer.address, -amount, terms))
+            .to.be.revertedWithCustomError(bond, "UnauthorizedTradeCaller");
+        await expect(bond.connect(issuer).cancelTradeTermination(id, issuer.address, -amount, "changed terms"))
             .to.be.revertedWithCustomError(bond, "RedemptionProposalMismatch");
         expect(await bond.redemptionProposal()).to.equal(proposal);
-        await bond.connect(buyer).cancelTradeTermination(id, amount, terms);
+        await bond.connect(issuer).cancelTradeTermination(id, issuer.address, -amount, terms);
         expect(await bond.positionState()).to.equal(POSITION.outstanding);
-        await bond.connect(issuer).requestTradeTermination(id, -amount, terms);
-        await expect(bond.connect(buyer).confirmTradeTermination(id, amount, terms))
-            .to.emit(bond, "TradeTerminationConfirmed").withArgs(buyer.address, id, amount, terms);
+        await bond.connect(issuer).requestTradeTermination(id, issuer.address, -amount, terms);
+        await expect(bond.connect(buyer).confirmTradeTermination(id, issuer.address, -amount, terms))
+            .to.emit(bond, "TradeTerminationConfirmed").withArgs(buyer.address, id, -amount, terms);
         expect(await bond.dvpPaymentContext()).to.deep.equal([issuer.address, buyer.address, amount]);
-        await expect(bond.connect(buyer).confirmTradeTermination(id, amount, terms))
+        await expect(bond.connect(buyer).confirmTradeTermination(id, issuer.address, -amount, terms))
             .to.be.revertedWithCustomError(bond, "InvalidPositionState");
         const attempt = await startAssetAttempt(token, "accepted repayment", true, false);
-        await expect(bond.connect(buyer).cancelTradeTermination(id, amount, terms))
+        await expect(bond.connect(issuer).cancelTradeTermination(id, issuer.address, -amount, terms))
             .to.be.revertedWithCustomError(bond, "SettlementActive");
         await bond.connect(buyer)["cancelTransfer(uint256)"](attempt.id);
-        await bond.connect(buyer).cancelTradeTermination(id, amount, terms);
+        await bond.connect(issuer).cancelTradeTermination(id, issuer.address, -amount, terms);
         expect(await bond.positionState()).to.equal(POSITION.outstanding);
         expect(await token.balanceOf(buyer.address)).to.equal(3n);
     });
@@ -337,12 +460,12 @@ describe("FixedRateBond with local demo integrations", function () {
         const token = await issueAndSettle();
         await advanceTo(ethers, DEMO_DATES.maturity);
         const { id: tradeId, amount } = await authorizeRedemption();
-        await bond.connect(issuer).cancelTradeTermination(tradeId, -amount, "maturity");
+        await bond.connect(issuer).cancelTradeTermination(tradeId, issuer.address, -amount, "maturity");
         expect(await bond.positionState()).to.equal(POSITION.outstanding);
         expect(await bond.redemptionProposal()).to.equal(ZeroHash);
         await authorizeRedemption();
         const failed = await startAssetAttempt(token, "redemption failure", true);
-        await expect(bond.connect(issuer).cancelTradeTermination(tradeId, -amount, "maturity"))
+        await expect(bond.connect(issuer).cancelTradeTermination(tradeId, issuer.address, -amount, "maturity"))
             .to.be.revertedWithCustomError(bond, "SettlementActive");
         await payment.settle(failed.id, false, failed.keys.failure);
         expect(await bond.positionState()).to.equal(POSITION.authorized);
@@ -375,11 +498,11 @@ describe("FixedRateBond with local demo integrations", function () {
             const issuerCash = await cash.balanceOf(issuer.address);
             const buyerCash = await cash.balanceOf(buyer.address);
             const issuerUnits = await token.balanceOf(issuer.address);
-            await expect(bond.connect(issuer).requestTradeTermination(id, -amount, terms))
+            await expect(bond.connect(issuer).requestTradeTermination(id, issuer.address, -amount, terms))
                 .to.be.revertedWithCustomError(bond, "InvalidPositionState");
-            await expect(bond.connect(buyer).confirmTradeTermination(id, amount, terms))
+            await expect(bond.connect(buyer).confirmTradeTermination(id, issuer.address, -amount, terms))
                 .to.be.revertedWithCustomError(bond, "InvalidPositionState");
-            await expect(bond.connect(issuer).cancelTradeTermination(id, -amount, terms))
+            await expect(bond.connect(issuer).cancelTradeTermination(id, issuer.address, -amount, terms))
                 .to.be.revertedWithCustomError(bond, "InvalidPositionState");
             await expect(bond.connect(issuer)[GENERATED_TRANSFER](await bond.currentTransferId(), 3n,
                 buyer.address, issuer.address, "0x01", payment.target))

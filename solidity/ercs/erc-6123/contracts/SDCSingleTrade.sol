@@ -5,6 +5,7 @@ import "./ISDC.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/utils/Strings.sol";
 import "./ERC20Settlement.sol";
+import "./TradeAuthorizable.sol";
 
 
 
@@ -19,7 +20,7 @@ import "./ERC20Settlement.sol";
  * - upon termination all remaining 'locked' amounts will be transferred back to the counterparties
 */
 
-abstract contract SDCSingleTrade is ISDCTrade {
+abstract contract SDCSingleTrade is ISDCTrade, TradeAuthorizable {
     /*
      * Trade States
      */
@@ -119,6 +120,7 @@ abstract contract SDCSingleTrade is ISDCTrade {
         address _party2,
         address _settlementToken
     ) {
+        require(_party1 != address(0) && _party2 != address(0) && _party1 != _party2, "Invalid trade parties");
         terminationPayment = 0;
         upfrontPayment = 0;
         party1 = _party1;
@@ -128,104 +130,165 @@ abstract contract SDCSingleTrade is ISDCTrade {
         tradeState = TradeState.Inactive;
     }
 
-    /*
-     * generates a hash from tradeData and generates a map entry in openRequests
-     * emits a TradeIncepted
-     * can be called only when TradeState = Incepted
+    /**
+     * @notice Stores the inception from the named inceptor's perspective.
+     * @dev The caller must be the inceptor or its approved trade operator.
      */
-    function inceptTrade(address _withParty, string memory _tradeData, int256 _position, int256 _paymentAmount, string memory _initialSettlementData) external override onlyCounterparty onlyWhenTradeInactive returns (string memory) {
-        require(msg.sender != _withParty, "Calling party cannot be the same as withParty");
-        require(_position == 1 || _position == -1, "Position can only be +1 or -1");
-        tradeState = TradeState.Incepted; // Set TradeState to Incepted
-        uint256 transactionHash = uint256(keccak256(abi.encode(msg.sender,_withParty,_tradeData,_position, _paymentAmount,_initialSettlementData)));
-        pendingRequests[transactionHash] = msg.sender;
-        receivingParty = _position == 1 ? msg.sender : _withParty;
-        upfrontPayment = _position == 1 ? _paymentAmount : -_paymentAmount; // upfrontPayment is saved with view on the receiving party
+    function inceptTrade(
+        address inceptor,
+        address counterparty,
+        string memory _tradeData,
+        int256 position,
+        int256 paymentAmount,
+        string memory initialSettlementData
+    ) external override onlyWhenTradeInactive returns (string memory) {
+        _requireTradeParties(inceptor, counterparty);
+        _requireTradeAuthorization(inceptor);
+        require(position == 1 || position == -1, "Position can only be +1 or -1");
+        require(paymentAmount != type(int256).min, "Payment amount cannot be int256 minimum");
+
+        uint256 transactionHash = uint256(keccak256(abi.encode(
+            inceptor, counterparty, _tradeData, position, paymentAmount, initialSettlementData
+        )));
+        pendingRequests[transactionHash] = inceptor;
+        receivingParty = position == 1 ? inceptor : counterparty;
+        upfrontPayment = position == 1 ? paymentAmount : -paymentAmount;
         tradeID = Strings.toString(transactionHash);
-        tradeData = _tradeData; // Set trade data to enable querying already in inception state
-        emit TradeIncepted(msg.sender, _withParty, tradeID, _tradeData, _position, _paymentAmount, _initialSettlementData);
+        tradeData = _tradeData;
+        tradeState = TradeState.Incepted;
+        emit TradeIncepted(inceptor, counterparty, tradeID, _tradeData, position, paymentAmount, initialSettlementData);
         return tradeID;
     }
 
-    /*
-     * generates a hash from tradeData and checks whether an open request can be found by the opposite party
-     * if so, data are stored and open request is deleted
-     * emits a TradeConfirmed
-     * can be called only when TradeState = Incepted
+    /**
+     * @notice Confirms the exact inception, including its original signs and party order.
+     * @dev The counterparty or its approved operator may confirm. Token destinations
+     *      are determined by the stored economic parties, never by the operator.
      */
-    function confirmTrade(address _withParty, string memory _tradeData, int256 _position, int256 _paymentAmount, string memory _initialSettlementData) external override  onlyCounterparty onlyWhenTradeIncepted {
-        address inceptingParty = msg.sender == party1 ? party2 : party1;
-        uint256 transactionHash = uint256(keccak256(abi.encode(_withParty,msg.sender,_tradeData,-_position, -_paymentAmount,_initialSettlementData)));
-        require(pendingRequests[transactionHash] == inceptingParty, "Confirmation fails due to inconsistent trade data or wrong party address");
-        delete pendingRequests[transactionHash]; // Delete Pending Request
+    function confirmTrade(
+        address inceptor,
+        address counterparty,
+        string memory _tradeData,
+        int256 position,
+        int256 paymentAmount,
+        string memory initialSettlementData
+    ) external override onlyWhenTradeIncepted {
+        _requireTradeParties(inceptor, counterparty);
+        _requireTradeAuthorization(counterparty);
+        uint256 transactionHash = uint256(keccak256(abi.encode(
+            inceptor, counterparty, _tradeData, position, paymentAmount, initialSettlementData
+        )));
+        require(pendingRequests[transactionHash] == inceptor, "Confirmation fails due to inconsistent trade data or wrong party address");
+        delete pendingRequests[transactionHash];
         tradeState = TradeState.Confirmed;
-        emit TradeConfirmed(msg.sender, tradeID);
+        emit TradeConfirmed(counterparty, tradeID);
         address upfrontPayer = upfrontPayment > 0 ? otherParty(receivingParty) : receivingParty;
-        uint256 upfrontTransferAmount = uint256(abs(_paymentAmount));
-        processTradeAfterConfirmation(upfrontPayer, upfrontTransferAmount,_initialSettlementData);
+        processTradeAfterConfirmation(upfrontPayer, uint256(abs(paymentAmount)), initialSettlementData);
     }
 
-    /*
-      * generates a hash from tradeData and checks whether an open request can be found by the opposite party
-      * if so, the open request is deleted, can only be called by incepting party.
-      * emits a TradeConfirmed
-      * can be called only when TradeState = Incepted
-      */
-    function cancelTrade(address _withParty, string memory _tradeData, int256 _position, int256 _paymentAmount, string memory _initialSettlementData) external override  onlyCounterparty onlyWhenTradeIncepted {
-        address inceptingParty = msg.sender;
-        uint256 transactionHash = uint256(keccak256(abi.encode(msg.sender,_withParty,_tradeData,_position,_paymentAmount,_initialSettlementData)));
-        require(pendingRequests[transactionHash] == inceptingParty, "Cancellation fails due to inconsistent trade data or wrong party address");
-        delete pendingRequests[transactionHash]; // Delete Pending Request
+    /**
+     * @notice Cancels an exact inception on behalf of its inceptor.
+     */
+    function cancelTrade(
+        address inceptor,
+        address counterparty,
+        string memory _tradeData,
+        int256 position,
+        int256 paymentAmount,
+        string memory initialSettlementData
+    ) external override onlyWhenTradeIncepted {
+        _requireTradeParties(inceptor, counterparty);
+        _requireTradeAuthorization(inceptor);
+        uint256 transactionHash = uint256(keccak256(abi.encode(
+            inceptor, counterparty, _tradeData, position, paymentAmount, initialSettlementData
+        )));
+        require(pendingRequests[transactionHash] == inceptor, "Cancellation fails due to inconsistent trade data or wrong party address");
+        delete pendingRequests[transactionHash];
         tradeState = TradeState.Inactive;
-        emit TradeCanceled(msg.sender, tradeID);
+        emit TradeCanceled(inceptor, tradeID);
     }
 
-    /*
-    * Can be called by a party for mutual termination
-    * Hash is generated an entry is put into pendingRequests
-    * TerminationRequest is emitted
-    * can be called only when ProcessState = Funded and TradeState = Active
-    */
-    function requestTradeTermination(string memory _tradeId, int256 _terminationPayment, string memory terminationTerms) external override onlyCounterparty onlyWhenSettled {
-        require(keccak256(abi.encodePacked(tradeID)) == keccak256(abi.encodePacked(_tradeId)), "Trade ID mismatch");
-        uint256 hash = uint256(keccak256(abi.encode(_tradeId, "terminate", _terminationPayment, terminationTerms)));
-        pendingRequests[hash] = msg.sender;
-        emit TradeTerminationRequest(msg.sender, _tradeId, _terminationPayment, terminationTerms);
-    }
-
-    /*
-     * Same pattern as for initiation
-     * confirming party generates same hash, looks into pendingRequests, if entry is found with correct address, tradeState is put to terminated
-     * can be called only when ProcessState = Funded and TradeState = Active
+    /**
+     * @notice Proposes termination with its payment viewed from requestingParty.
      */
-    function confirmTradeTermination(string memory _tradeId, int256 _terminationPayment, string memory terminationTerms) external override onlyCounterparty onlyWhenSettled {
-        address pendingRequestParty = msg.sender == party1 ? party2 : party1;
-        uint256 hashConfirm = uint256(keccak256(abi.encode(_tradeId, "terminate", -_terminationPayment, terminationTerms)));
-        require(pendingRequests[hashConfirm] == pendingRequestParty, "Confirmation of termination failed due to wrong party or missing request");
-        delete pendingRequests[hashConfirm];
+    function requestTradeTermination(
+        string memory _tradeId,
+        address requestingParty,
+        int256 _terminationPayment,
+        string memory terminationTerms
+    ) external override onlyWhenSettled {
+        _requireTradeParty(requestingParty);
+        _requireTradeAuthorization(requestingParty);
+        _requireTradeId(_tradeId);
+        require(_terminationPayment != type(int256).min, "Payment amount cannot be int256 minimum");
+        uint256 requestHash = uint256(keccak256(abi.encode(
+            _tradeId, "terminate", requestingParty, _terminationPayment, terminationTerms
+        )));
+        pendingRequests[requestHash] = requestingParty;
+        emit TradeTerminationRequest(requestingParty, _tradeId, _terminationPayment, terminationTerms);
+    }
 
-        terminationPayment = msg.sender == receivingParty ? _terminationPayment : -_terminationPayment; // termination payment will be provided in view of receiving party
+    /**
+     * @notice Confirms the exact proposal on behalf of the opposite trade party.
+     * @dev The payment remains in the requesting party's perspective.
+     */
+    function confirmTradeTermination(
+        string memory _tradeId,
+        address requestingParty,
+        int256 _terminationPayment,
+        string memory terminationTerms
+    ) external override onlyWhenSettled {
+        address confirmingParty = otherParty(requestingParty);
+        _requireTradeAuthorization(confirmingParty);
+        _requireTradeId(_tradeId);
+        uint256 requestHash = uint256(keccak256(abi.encode(
+            _tradeId, "terminate", requestingParty, _terminationPayment, terminationTerms
+        )));
+        require(pendingRequests[requestHash] == requestingParty, "Confirmation of termination failed due to wrong party or missing request");
+        delete pendingRequests[requestHash];
 
-        emit TradeTerminationConfirmed(msg.sender, _tradeId, _terminationPayment, terminationTerms);
-        /* Trigger Termination Payment Amount */
+        // Settlement internals use the receiving party's perspective.
+        terminationPayment = requestingParty == receivingParty ? _terminationPayment : -_terminationPayment;
+        emit TradeTerminationConfirmed(confirmingParty, _tradeId, _terminationPayment, terminationTerms);
         address payerAddress = terminationPayment > 0 ? otherParty(receivingParty) : receivingParty;
-        uint256 absPaymentAmount = uint256(abs(_terminationPayment));
         setTradeState(TradeState.InTermination);
-        processTradeAfterMutualTermination(payerAddress,absPaymentAmount,terminationTerms);
-
+        processTradeAfterMutualTermination(payerAddress, uint256(abs(_terminationPayment)), terminationTerms);
     }
 
-    /*
-     * Same pattern as for initiation
-     * confirming party generates same hash, looks into pendingRequests, if entry is found with correct address, tradeState is put to terminated
-     * can be called only when ProcessState = Funded and TradeState = Active
+    /**
+     * @notice Withdraws the exact proposal on behalf of its requesting party.
      */
-    function cancelTradeTermination(string memory _tradeId, int256 _terminationPayment, string memory terminationTerms) external override onlyCounterparty onlyWhenSettled {
-        address pendingRequestParty = msg.sender;
-        uint256 hashConfirm = uint256(keccak256(abi.encode(_tradeId, "terminate", _terminationPayment,terminationTerms)));
-        require(pendingRequests[hashConfirm] == pendingRequestParty, "Cancellation of termination failed due to wrong party or missing request");
-        delete pendingRequests[hashConfirm];
-        emit TradeTerminationCanceled(msg.sender, _tradeId, terminationTerms);
+    function cancelTradeTermination(
+        string memory _tradeId,
+        address requestingParty,
+        int256 _terminationPayment,
+        string memory terminationTerms
+    ) external override onlyWhenSettled {
+        _requireTradeParty(requestingParty);
+        _requireTradeAuthorization(requestingParty);
+        _requireTradeId(_tradeId);
+        uint256 requestHash = uint256(keccak256(abi.encode(
+            _tradeId, "terminate", requestingParty, _terminationPayment, terminationTerms
+        )));
+        require(pendingRequests[requestHash] == requestingParty, "Cancellation of termination failed due to wrong party or missing request");
+        delete pendingRequests[requestHash];
+        emit TradeTerminationCanceled(requestingParty, _tradeId, terminationTerms);
+    }
+
+    function _requireTradeParty(address party) private view {
+        require(party == party1 || party == party2, "Invalid trade party");
+    }
+
+    function _requireTradeParties(address inceptor, address counterparty) private view {
+        require(
+            (inceptor == party1 && counterparty == party2)
+                || (inceptor == party2 && counterparty == party1),
+            "Invalid trade parties"
+        );
+    }
+
+    function _requireTradeId(string memory id) private view {
+        require(keccak256(bytes(tradeID)) == keccak256(bytes(id)), "Trade ID mismatch");
     }
 
     /*
@@ -290,10 +353,6 @@ abstract contract SDCSingleTrade is ISDCTrade {
         return tradeID;
     }
 
-    function setTradeId(string memory _tradeID) public {
-        tradeID= _tradeID;
-    }
-
     function getTokenAddress() public view returns(address) {
         return address(settlementToken);
     }
@@ -310,7 +369,8 @@ abstract contract SDCSingleTrade is ISDCTrade {
      * Other party
      */
     function otherParty(address party) internal view returns (address) {
-        return (party == party1 ? party2 : party1);
+        _requireTradeParty(party);
+        return party == party1 ? party2 : party1;
     }
 
     /**

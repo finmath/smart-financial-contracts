@@ -25,6 +25,7 @@ import {IDecryptionContractInceptionCallback} from "@finmath.net/dvp/contracts/I
 //will be moved to utils folder from OpenZeppelin v5.0
 import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import {ISDCTrade} from "@finmath.net/sdc/contracts/ISDCTrade.sol";
+import {TradeAuthorizable} from "@finmath.net/sdc/contracts/TradeAuthorizable.sol";
 
 /**
  * @title FixedRateBond
@@ -39,7 +40,7 @@ import {ISDCTrade} from "@finmath.net/sdc/contracts/ISDCTrade.sol";
  * @author Raphael Prandtl
  * @author Christian Fries
  */
-contract FixedRateBond is FixedRateBondConventions, AbstractProduct, DemoAssetLocking, ISDCTrade, ReentrancyGuard, IRepresentableStateVersioned {
+contract FixedRateBond is FixedRateBondConventions, AbstractProduct, DemoAssetLocking, ISDCTrade, TradeAuthorizable, ReentrancyGuard, IRepresentableStateVersioned {
 
     uint256 private constant COUPON_ID_DOMAIN = uint256(1) << 255;
 
@@ -138,6 +139,9 @@ contract FixedRateBond is FixedRateBondConventions, AbstractProduct, DemoAssetLo
     /// @notice Terms hash frozen at inception.
     bytes32 public agreedTermsHash;
 
+    /// @notice Immutable commitment to the complete ERC-6123 inception tuple.
+    bytes32 public tradeInception;
+
     /// @notice Delivery and repayment progress; a failed escrow attempt does not change it.
     PositionState public positionState;
 
@@ -154,10 +158,8 @@ contract FixedRateBond is FixedRateBondConventions, AbstractProduct, DemoAssetLo
 
     // ------------------------------ Custom Errors ------------------------------ */
 
-    error NotIssuer(address caller);
     error NotBuyer(address caller);
     error NotDemoPaymentContract(address caller);
-    error NotTradeParty(address caller);
     error InvalidTradeStatus(TradeStatus current);
     error InvalidCounterparty(address party);
     error BuyerNotEligible(address buyer);
@@ -227,11 +229,6 @@ contract FixedRateBond is FixedRateBondConventions, AbstractProduct, DemoAssetLo
 
     // ------------------------------ Modifiers ------------------------------ */
 
-    modifier onlyIssuer() {
-        if (msg.sender != issuer) revert NotIssuer(msg.sender);
-        _;
-    }
-
     modifier onlyBuyer() {
         if (msg.sender != buyer) revert NotBuyer(msg.sender);
         _;
@@ -246,122 +243,164 @@ contract FixedRateBond is FixedRateBondConventions, AbstractProduct, DemoAssetLo
 
     /**
      * @inheritdoc ISDCTrade
-     * @dev Issuer-driven. tradeData must be the hex encoded termsHash() and
-     *      position must equal initialAggregateAmount. The payment amount is
-     *      derived from the issue price, so the supplied value is ignored to
-     *      rule out inconsistencies with the term sheet.
-     *
-     *      Records the issuer's proposed terms; delivery requires buyer confirmation.
+     * @dev The issuer delivers the negative aggregate nominal position and receives
+     *      the positive issue-price payment. The terms hash and every supplied field
+     *      are frozen at inception; delivery requires buyer confirmation.
      */
-    function inceptTrade(address withParty, string memory tradeData, int position, int256 /* paymentAmount */, string memory initialSettlementData) external override onlyIssuer nonReentrant returns (string memory) {
-        if (tradeStatus != TradeStatus.Inactive && tradeStatus != TradeStatus.Incepted) revert InvalidTradeStatus(tradeStatus);
-        if (withParty != buyer) revert InvalidCounterparty(withParty);
-        if (position <= 0 || uint256(position) != initialAggregateAmount) {
-            revert InvalidAmount();
-        }
+    function inceptTrade(
+        address inceptor, address counterparty, string memory tradeData,
+        int256 position, int256 paymentAmount, string memory initialSettlementData
+    ) external override inTradeStatus(TradeStatus.Inactive) nonReentrant returns (string memory) {
+        _requireTradeAuthorization(issuer);
+        _requireTradeEconomics(inceptor, counterparty, position, paymentAmount);
         if (!IClientRegistry(clientRegistry).isEligibleClient(buyer, productDefinitionId)) {
             revert BuyerNotEligible(buyer);
         }
-
         bytes32 current = termsHash();
         bytes32 supplied = ProductLib.parseHash(tradeData);
         if (supplied != current) revert TermsMismatch(current, supplied);
 
         agreedTermsHash = current;
+        tradeInception = _tradeCommitment(inceptor, counterparty, tradeData,
+            position, paymentAmount, initialSettlementData);
         _setTradeStatus(TradeStatus.Incepted);
 
         string memory id = tradeId();
-        emit TradeIncepted(msg.sender, withParty, id, tradeData, position, 0, initialSettlementData);
-
+        emit TradeIncepted(issuer, buyer, id, tradeData, position, paymentAmount, initialSettlementData);
         return id;
     }
 
     /**
      * @inheritdoc ISDCTrade
-     * @dev Buyer-driven. Accepts the terms and enables delivery of the existing asset.
+     * @dev Buyer-authorized acceptance repeats the issuer's original signed amounts.
      */
-    function confirmTrade(address withParty, string memory tradeData, int position, int256 /* paymentAmount */, string memory /* initialSettlementData */) external override onlyBuyer inTradeStatus(TradeStatus.Incepted) nonReentrant {
-        if (withParty != issuer) revert InvalidCounterparty(withParty);
-        if (position <= 0 || uint256(position) != initialAggregateAmount) {
-            revert InvalidAmount();
-        }
-
-        bytes32 supplied = ProductLib.parseHash(tradeData);
-        if (supplied != agreedTermsHash) revert TermsMismatch(agreedTermsHash, supplied);
+    function confirmTrade(
+        address inceptor, address counterparty, string memory tradeData,
+        int256 position, int256 paymentAmount, string memory initialSettlementData
+    ) external override inTradeStatus(TradeStatus.Incepted) nonReentrant {
+        _requireTradeAuthorization(buyer);
+        _requireTradeTerms(inceptor, counterparty, tradeData, position, paymentAmount, initialSettlementData);
         bytes32 current = termsHash();
         if (current != agreedTermsHash) revert TermsMismatch(agreedTermsHash, current);
 
         confirmedAt = uint64(block.timestamp);
-        _exchange = AssetExchange(issuer, buyer, settlementAmount());
+        _exchange = AssetExchange(issuer, buyer, uint256(paymentAmount));
         _setTradeStatus(TradeStatus.Confirmed);
-
-        emit TradeConfirmed(msg.sender, tradeId());
+        emit TradeConfirmed(buyer, tradeId());
     }
 
     /**
      * @inheritdoc ISDCTrade
-     * @dev Callable by either party while the trade is incepted but not confirmed.
-     *      Cancellation is terminal and leaves both parties' assets untouched.
+     * @dev The issuer or its operator withdraws the exact pending offer. Cancellation
+     *      is terminal and leaves both parties' assets untouched.
      */
-    function cancelTrade(address /* withParty */, string memory /* tradeData */, int /* position */, int256 /* paymentAmount */, string memory /* initialSettlementData */) external override inTradeStatus(TradeStatus.Incepted) {
-        if (msg.sender != issuer && msg.sender != buyer) revert NotTradeParty(msg.sender);
-
+    function cancelTrade(
+        address inceptor, address counterparty, string memory tradeData,
+        int256 position, int256 paymentAmount, string memory initialSettlementData
+    ) external override inTradeStatus(TradeStatus.Incepted) {
+        _requireTradeAuthorization(issuer);
+        _requireTradeTerms(inceptor, counterparty, tradeData, position, paymentAmount, initialSettlementData);
         _setTradeStatus(TradeStatus.Cancelled);
+        emit TradeCanceled(issuer, tradeId());
+    }
 
-        emit TradeCanceled(msg.sender, tradeId());
+    function _requireTradeEconomics(
+        address inceptor, address counterparty, int256 position, int256 paymentAmount
+    ) private view {
+        if (inceptor != issuer) revert InvalidCounterparty(inceptor);
+        if (counterparty != buyer) revert InvalidCounterparty(counterparty);
+        uint256 payment = settlementAmount();
+        if (initialAggregateAmount > uint256(type(int256).max) || payment > uint256(type(int256).max)
+            || position != -int256(initialAggregateAmount) || paymentAmount != int256(payment)) {
+            revert InvalidAmount();
+        }
+    }
+
+    function _requireTradeTerms(
+        address inceptor, address counterparty, string memory tradeData,
+        int256 position, int256 paymentAmount, string memory initialSettlementData
+    ) private view {
+        _requireTradeEconomics(inceptor, counterparty, position, paymentAmount);
+        bytes32 supplied = _tradeCommitment(inceptor, counterparty, tradeData,
+            position, paymentAmount, initialSettlementData);
+        if (supplied != tradeInception) revert TermsMismatch(tradeInception, supplied);
+    }
+
+    function _tradeCommitment(
+        address inceptor, address counterparty, string memory tradeData,
+        int256 position, int256 paymentAmount, string memory initialSettlementData
+    ) private pure returns (bytes32) {
+        return keccak256(abi.encode(inceptor, counterparty, tradeData, position, paymentAmount, initialSettlementData));
     }
 
     /**
      * @inheritdoc ISDCTrade
-     * @dev Proposes the contractual maturity repayment after delivery. The issuer supplies
-     *      the negative redemption amount (its payment) and descriptive terms. This demo
-     *      requires a fresh buyer acceptance before the returned units can be escrowed.
+     * @dev Proposes contractual maturity repayment after delivery. The issuer supplies
+     *      its negative repayment amount; buyer confirmation repeats that same amount.
      */
-    function requestTradeTermination(string memory tradeId_, int256 terminationPayment, string memory terminationTerms) external override onlyIssuer {
+    function requestTradeTermination(
+        string memory tradeId_, address requestingParty, int256 terminationPayment, string memory terminationTerms
+    ) external override {
+        _requireTradeAuthorization(issuer);
+        _requireRequestingIssuer(requestingParty);
         if (positionState != PositionState.Outstanding) revert InvalidPositionState(positionState);
         if (block.timestamp < maturityDate) revert NotMatured(maturityDate);
         if (_isSettlementActive()) revert SettlementActive();
         if (terminationPayment != -_redemptionValue()) revert InvalidAmount();
-        redemptionProposal = _redemptionCommitment(tradeId_, terminationTerms);
+        redemptionProposal = _redemptionCommitment(tradeId_, requestingParty, terminationPayment, terminationTerms);
         _recordPosition(PositionState.RedemptionOffered);
-        emit TradeTerminationRequest(msg.sender, tradeId_, terminationPayment, terminationTerms);
+        emit TradeTerminationRequest(issuer, tradeId_, terminationPayment, terminationTerms);
     }
 
     /**
      * @inheritdoc ISDCTrade
-     * @dev The buyer accepts the exact proposal and its positive receipt amount. Acceptance
-     *      creates the asset exchange explicitly: buyer delivers units, issuer delivers cash.
-     *      Neither the agreement status nor a pending escrow's direction is repurposed.
+     * @dev Buyer-authorized acceptance creates the explicit return exchange: buyer
+     *      delivers units, issuer delivers the cash stated in its original proposal.
      */
-    function confirmTradeTermination(string memory tradeId_, int256 terminationPayment, string memory terminationTerms) external override onlyBuyer {
+    function confirmTradeTermination(
+        string memory tradeId_, address requestingParty, int256 terminationPayment, string memory terminationTerms
+    ) external override {
+        _requireTradeAuthorization(buyer);
+        _requireRequestingIssuer(requestingParty);
         if (positionState != PositionState.RedemptionOffered) revert InvalidPositionState(positionState);
         if (block.timestamp < maturityDate) revert NotMatured(maturityDate);
-        if (terminationPayment != _redemptionValue()) revert InvalidAmount();
-        if (_redemptionCommitment(tradeId_, terminationTerms) != redemptionProposal) revert RedemptionProposalMismatch();
-        _exchange = AssetExchange(buyer, issuer, uint256(terminationPayment));
+        _requireRedemptionTerms(tradeId_, requestingParty, terminationPayment, terminationTerms);
+        _exchange = AssetExchange(buyer, issuer, uint256(-terminationPayment));
         _recordPosition(PositionState.ReturnAuthorized);
-        emit TradeTerminationConfirmed(msg.sender, tradeId_, terminationPayment, terminationTerms);
+        emit TradeTerminationConfirmed(buyer, tradeId_, terminationPayment, terminationTerms);
     }
 
     /**
      * @inheritdoc ISDCTrade
-     * @dev Either party may withdraw the matched proposal before repayment, including after
-     *      a failed attempt. A live asset attempt must first be cancelled or resolved. The
-     *      signed payment is from the cancelling party's perspective, as for its acceptance.
+     * @dev The requesting issuer or its operator may withdraw before a live asset
+     *      attempt, including after a failed attempt. Every argument repeats the proposal.
      */
-    function cancelTradeTermination(string memory tradeId_, int256 terminationPayment, string memory terminationTerms) external override {
-        if (msg.sender != issuer && msg.sender != buyer) revert NotTradeParty(msg.sender);
+    function cancelTradeTermination(
+        string memory tradeId_, address requestingParty, int256 terminationPayment, string memory terminationTerms
+    ) external override {
+        _requireTradeAuthorization(issuer);
+        _requireRequestingIssuer(requestingParty);
         if (positionState != PositionState.RedemptionOffered && positionState != PositionState.ReturnAuthorized) {
             revert InvalidPositionState(positionState);
         }
         if (_isSettlementActive()) revert SettlementActive();
-        int256 expected = _redemptionValue();
-        if (msg.sender == issuer) expected = -expected;
-        if (terminationPayment != expected) revert InvalidAmount();
-        if (_redemptionCommitment(tradeId_, terminationTerms) != redemptionProposal) revert RedemptionProposalMismatch();
+        _requireRedemptionTerms(tradeId_, requestingParty, terminationPayment, terminationTerms);
         delete redemptionProposal;
         _recordPosition(PositionState.Outstanding);
-        emit TradeTerminationCanceled(msg.sender, tradeId_, terminationTerms);
+        emit TradeTerminationCanceled(issuer, tradeId_, terminationTerms);
+    }
+
+    function _requireRequestingIssuer(address requestingParty) private view {
+        if (requestingParty != issuer) revert InvalidCounterparty(requestingParty);
+    }
+
+    function _requireRedemptionTerms(
+        string memory id, address requestingParty, int256 amount, string memory terms
+    ) private view {
+        if (amount != -_redemptionValue()) revert InvalidAmount();
+        if (_redemptionCommitment(id, requestingParty, amount, terms) != redemptionProposal) {
+            revert RedemptionProposalMismatch();
+        }
     }
 
     /// @dev Bounds the signed ERC-6123 amount and binds acceptance to this trade's economics.
@@ -371,9 +410,11 @@ contract FixedRateBond is FixedRateBondConventions, AbstractProduct, DemoAssetLo
         return int256(value);
     }
 
-    function _redemptionCommitment(string memory id, string memory terms) private view returns (bytes32) {
+    function _redemptionCommitment(
+        string memory id, address requestingParty, int256 amount, string memory terms
+    ) private view returns (bytes32) {
         if (keccak256(bytes(id)) != keccak256(bytes(tradeId()))) revert InvalidTradeData();
-        return keccak256(abi.encode(id, agreedTermsHash, finalRedemptionAmount(), terms));
+        return keccak256(abi.encode(id, requestingParty, amount, agreedTermsHash, terms));
     }
 
     // ------------------------------ Coupon Payment ------------------------------ */

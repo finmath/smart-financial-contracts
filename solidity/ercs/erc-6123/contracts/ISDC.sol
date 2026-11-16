@@ -64,6 +64,10 @@ import "./IAsyncTransferCallback.sol";
  *  </li>
  * </ol>
  *
+ * Trade methods receive explicit economic parties. The transaction caller may be a
+ * participant or an independently authorized operator; see ISDCTrade for matching and
+ * authorization requirements. Settlement and callback authorization are independent.
+ *
  * The ISDC interface is split into three parts: ISDCTrade, ISDCSettlement, IAsyncTransferCallback
  * <dl>
  *  <dd>ISDCTrade</dd>

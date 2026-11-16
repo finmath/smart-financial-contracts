@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: CC0-1.0
 pragma solidity ^0.8.24;
 
+import {TradeAuthorizable} from "@finmath.net/sdc/contracts/TradeAuthorizable.sol";
 import {FxAtomicSwap} from "../contracts/FxAtomicSwap.sol";
 import {FxAtomicSwapFactory} from "../contracts/FxAtomicSwapFactory.sol";
 import {ERC20TokenExample} from "../contracts/ERC20TokenExample.sol";
@@ -84,7 +85,8 @@ contract FxAtomicSwapTest {
         _assertSettled();
     }
 
-    function testFuzzBothInceptorsAndDirections(
+    function testFuzzDirectAndDelegatedBothInceptorsAndDirections(
+        bool delegated,
         bool bIncepts,
         bool receivesBase,
         uint128 baseAmountSeed,
@@ -97,30 +99,138 @@ contract FxAtomicSwapTest {
         address confirmer = bIncepts ? PARTY_A : PARTY_B;
         address basePayer = receivesBase ? confirmer : inceptor;
         address baseReceiver = receivesBase ? inceptor : confirmer;
-        address quotePayer = baseReceiver;
-        address quoteReceiver = basePayer;
         base.mint(basePayer, baseAmount);
-        quote.mint(quotePayer, quoteAmount);
+        quote.mint(baseReceiver, quoteAmount);
         vm.prank(basePayer);
         base.approve(address(router), baseAmount);
-        vm.prank(quotePayer);
+        vm.prank(baseReceiver);
         quote.approve(address(router), quoteAmount);
         int256 position = receivesBase ? int256(baseAmount) : -int256(baseAmount);
         int256 payment = receivesBase ? -int256(quoteAmount) : int256(quoteAmount);
 
-        vm.prank(inceptor);
-        swap.inceptTrade(confirmer, "terms", position, payment, "settlement");
-        vm.prank(confirmer);
-        swap.confirmTrade(inceptor, "terms", -position, -payment, "settlement");
+        if (delegated) {
+            vm.prank(inceptor);
+            swap.setTradeOperator(OUTSIDER, true);
+            vm.prank(confirmer);
+            swap.setTradeOperator(OUTSIDER, true);
+        }
+        vm.prank(delegated ? OUTSIDER : inceptor);
+        swap.inceptTrade(inceptor, confirmer, "terms", position, payment, "settlement");
+        vm.prank(delegated ? OUTSIDER : confirmer);
+        swap.confirmTrade(inceptor, confirmer, "terms", position, payment, "settlement");
 
         require(swap.phase() == FxAtomicSwap.Phase.Settled, "phase");
         require(!router.activeSwap(address(swap)), "authorization");
         require(base.balanceOf(basePayer) == INITIAL_BALANCE, "base paid");
         require(base.balanceOf(baseReceiver) == INITIAL_BALANCE + baseAmount, "base received");
-        require(quote.balanceOf(quotePayer) == INITIAL_BALANCE, "quote paid");
-        require(quote.balanceOf(quoteReceiver) == INITIAL_BALANCE + quoteAmount, "quote received");
+        require(quote.balanceOf(baseReceiver) == INITIAL_BALANCE, "quote paid");
+        require(quote.balanceOf(basePayer) == INITIAL_BALANCE + quoteAmount, "quote received");
         require(base.allowance(basePayer, address(router)) == 0, "base allowance");
-        require(quote.allowance(quotePayer, address(router)) == 0, "quote allowance");
+        require(quote.allowance(baseReceiver, address(router)) == 0, "quote allowance");
+    }
+
+    function testDelegatedTradeEmitsParticipantsAndPaysOnlyParticipants() public {
+        address confirmationOperator = address(0xD);
+        vm.prank(PARTY_A);
+        swap.setTradeOperator(OUTSIDER, true);
+        vm.prank(PARTY_B);
+        swap.setTradeOperator(confirmationOperator, true);
+
+        vm.expectEmit(false, false, false, true, address(swap));
+        emit TradeIncepted(PARTY_A, PARTY_B, "1", "terms", POSITION, PAYMENT, "settlement");
+        vm.prank(OUTSIDER);
+        swap.inceptTrade(PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
+        require(swap.inceptor() == PARTY_A, "operator became inceptor");
+        vm.expectEmit(false, false, false, true, address(swap));
+        emit TradeConfirmed(PARTY_B, "1");
+        vm.prank(confirmationOperator);
+        swap.confirmTrade(PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
+        _assertSettled();
+        require(
+            base.balanceOf(OUTSIDER) == 0 && quote.balanceOf(OUTSIDER) == 0,
+            "inceptor operator received tokens"
+        );
+        require(
+            base.balanceOf(confirmationOperator) == 0 && quote.balanceOf(confirmationOperator) == 0,
+            "confirmation operator received tokens"
+        );
+        vm.expectRevert(FxAtomicSwap.InvalidPhase.selector);
+        vm.prank(confirmationOperator);
+        swap.confirmTrade(PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
+    }
+
+    function testDelegatedCancellationRevokesRouterAndEmitsInceptor() public {
+        _incept();
+        vm.prank(PARTY_A);
+        swap.setTradeOperator(OUTSIDER, true);
+        vm.expectEmit(false, false, false, true, address(swap));
+        emit TradeCanceled(PARTY_A, "1");
+        vm.prank(OUTSIDER);
+        swap.cancelTrade(PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
+        require(swap.phase() == FxAtomicSwap.Phase.Canceled, "phase");
+        require(!router.activeSwap(address(swap)), "authorization survived cancellation");
+        _assertOriginalBalancesAndAllowances();
+        _assertTerminalCallsRevert();
+    }
+
+    function testConfirmationOperatorRequiresCounterpartyApprovalDespiteAllowances() public {
+        vm.prank(PARTY_A);
+        swap.setTradeOperator(OUTSIDER, true);
+        vm.prank(OUTSIDER);
+        swap.inceptTrade(PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
+        // Inceptor authorization and both standing token allowances do not grant B's consent.
+        _expectUnauthorized(OUTSIDER, PARTY_B);
+        vm.prank(OUTSIDER);
+        swap.confirmTrade(PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
+        vm.prank(OUTSIDER);
+        swap.setTradeOperator(address(0xD), true);
+        require(!swap.isTradeOperator(PARTY_B, address(0xD)), "delegation escaped grantor");
+        _expectUnauthorized(address(0xD), PARTY_B);
+        vm.prank(address(0xD));
+        swap.confirmTrade(PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
+        _assertOpenAndUnspent();
+    }
+
+    function testRevokedOperatorCannotConfirmAndCanBeReauthorized() public {
+        _incept();
+        vm.prank(PARTY_B);
+        swap.setTradeOperator(OUTSIDER, true);
+        vm.prank(PARTY_B);
+        swap.setTradeOperator(OUTSIDER, false);
+        _expectUnauthorized(OUTSIDER, PARTY_B);
+        vm.prank(OUTSIDER);
+        swap.confirmTrade(PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
+        _assertOpenAndUnspent();
+        vm.prank(PARTY_B);
+        swap.setTradeOperator(OUTSIDER, true);
+        vm.prank(OUTSIDER);
+        swap.confirmTrade(PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
+        _assertSettled();
+    }
+
+    function testOperatorApprovalIsScopedToOneSwap() public {
+        FxAtomicSwap second = _createSwap(_token(base), _token(quote), PARTY_A, PARTY_B);
+        vm.prank(PARTY_A);
+        swap.setTradeOperator(OUTSIDER, true);
+        require(!second.isTradeOperator(PARTY_A, OUTSIDER), "approval leaked to another swap");
+        _expectUnauthorized(OUTSIDER, PARTY_A);
+        vm.prank(OUTSIDER);
+        second.inceptTrade(PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
+        require(second.phase() == FxAtomicSwap.Phase.Created, "unauthorized inception");
+        _assertOriginalBalancesAndAllowances();
+    }
+
+    function testDelegatedConfirmationRejectsLegacySignsAndRedirectedParticipants() public {
+        _incept();
+        vm.prank(PARTY_B);
+        swap.setTradeOperator(OUTSIDER, true);
+        vm.expectRevert(FxAtomicSwap.TermsMismatch.selector);
+        vm.prank(OUTSIDER);
+        swap.confirmTrade(PARTY_A, PARTY_B, "terms", -POSITION, -PAYMENT, "settlement");
+        vm.expectRevert(FxAtomicSwap.InvalidParty.selector);
+        vm.prank(OUTSIDER);
+        swap.confirmTrade(PARTY_A, OUTSIDER, "terms", POSITION, PAYMENT, "settlement");
+        _assertOpenAndUnspent();
     }
 
     function testCancellationExpiresQuoteAndClearsAuthorizationWithoutSpending() public {
@@ -137,9 +247,9 @@ contract FxAtomicSwapTest {
 
     function testPartyBCanInceptAndCancel() public {
         vm.prank(PARTY_B);
-        swap.inceptTrade(PARTY_A, "terms", -POSITION, -PAYMENT, "settlement");
+        swap.inceptTrade(PARTY_B, PARTY_A, "terms", -POSITION, -PAYMENT, "settlement");
         vm.prank(PARTY_B);
-        swap.cancelTrade(PARTY_A, "terms", -POSITION, -PAYMENT, "settlement");
+        swap.cancelTrade(PARTY_B, PARTY_A, "terms", -POSITION, -PAYMENT, "settlement");
         require(swap.phase() == FxAtomicSwap.Phase.Canceled, "phase");
         require(!router.activeSwap(address(swap)), "authorization");
         _assertOriginalBalancesAndAllowances();
@@ -150,10 +260,10 @@ contract FxAtomicSwapTest {
         FxAtomicSwap unregistered =
             new FxAtomicSwap(_token(base), _token(quote), PARTY_A, PARTY_B, router);
         vm.prank(PARTY_A);
-        unregistered.inceptTrade(PARTY_B, "terms", POSITION, PAYMENT, "settlement");
+        unregistered.inceptTrade(PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
         vm.expectRevert(ERC20AtomicSwapSettlementRouter.InactiveSwap.selector);
         vm.prank(PARTY_A);
-        unregistered.cancelTrade(PARTY_B, "terms", POSITION, PAYMENT, "settlement");
+        unregistered.cancelTrade(PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
         require(
             unregistered.phase() == FxAtomicSwap.Phase.Incepted,
             "cancellation phase survived revert"
@@ -175,9 +285,9 @@ contract FxAtomicSwapTest {
         _cancel();
         require(router.activeSwap(address(second)), "cancellation affected another swap");
         vm.prank(PARTY_A);
-        second.inceptTrade(PARTY_B, "new terms", POSITION, PAYMENT, "settlement");
+        second.inceptTrade(PARTY_A, PARTY_B, "new terms", POSITION, PAYMENT, "settlement");
         vm.prank(PARTY_B);
-        second.confirmTrade(PARTY_A, "new terms", -POSITION, -PAYMENT, "settlement");
+        second.confirmTrade(PARTY_A, PARTY_B, "new terms", POSITION, PAYMENT, "settlement");
         require(second.phase() == FxAtomicSwap.Phase.Settled, "second swap did not settle");
         require(!router.activeSwap(address(second)), "second authorization");
         require(swap.phase() == FxAtomicSwap.Phase.Canceled, "first swap changed");
@@ -229,12 +339,15 @@ contract FxAtomicSwapTest {
     }
 
     function testInceptionRejectsWrongPartiesAndRepeatedInception() public {
-        vm.expectRevert(FxAtomicSwap.InvalidParty.selector);
+        _expectUnauthorized(OUTSIDER, PARTY_A);
         vm.prank(OUTSIDER);
-        swap.inceptTrade(PARTY_B, "terms", POSITION, PAYMENT, "settlement");
+        swap.inceptTrade(PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
         vm.expectRevert(FxAtomicSwap.InvalidParty.selector);
         vm.prank(PARTY_A);
-        swap.inceptTrade(OUTSIDER, "terms", POSITION, PAYMENT, "settlement");
+        swap.inceptTrade(PARTY_A, OUTSIDER, "terms", POSITION, PAYMENT, "settlement");
+        vm.expectRevert(FxAtomicSwap.InvalidParty.selector);
+        vm.prank(OUTSIDER);
+        swap.inceptTrade(OUTSIDER, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
         _incept();
         vm.expectRevert(FxAtomicSwap.InvalidPhase.selector);
         _incept();
@@ -248,7 +361,7 @@ contract FxAtomicSwapTest {
         for (uint256 i; i < positions.length; i++) {
             vm.expectRevert(FxAtomicSwap.InvalidLegs.selector);
             vm.prank(PARTY_A);
-            swap.inceptTrade(PARTY_B, "terms", positions[i], payments[i], "settlement");
+            swap.inceptTrade(PARTY_A, PARTY_B, "terms", positions[i], payments[i], "settlement");
         }
         require(swap.phase() == FxAtomicSwap.Phase.Created, "failed inception changed phase");
     }
@@ -263,15 +376,21 @@ contract FxAtomicSwapTest {
 
     function testConfirmationRequiresCounterpartyAndOriginalInceptor() public {
         _incept();
-        vm.expectRevert(FxAtomicSwap.InvalidParty.selector);
+        _expectUnauthorized(PARTY_A, PARTY_B);
         vm.prank(PARTY_A);
-        swap.confirmTrade(PARTY_A, "terms", -POSITION, -PAYMENT, "settlement");
-        vm.expectRevert(FxAtomicSwap.InvalidParty.selector);
+        swap.confirmTrade(PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
+        _expectUnauthorized(OUTSIDER, PARTY_B);
         vm.prank(OUTSIDER);
-        swap.confirmTrade(PARTY_A, "terms", -POSITION, -PAYMENT, "settlement");
+        swap.confirmTrade(PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
         vm.expectRevert(FxAtomicSwap.InvalidParty.selector);
         vm.prank(PARTY_B);
-        swap.confirmTrade(OUTSIDER, "terms", -POSITION, -PAYMENT, "settlement");
+        swap.confirmTrade(OUTSIDER, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
+        vm.expectRevert(FxAtomicSwap.InvalidParty.selector);
+        vm.prank(PARTY_B);
+        swap.confirmTrade(PARTY_A, OUTSIDER, "terms", POSITION, PAYMENT, "settlement");
+        vm.expectRevert(FxAtomicSwap.InvalidParty.selector);
+        vm.prank(PARTY_B);
+        swap.confirmTrade(PARTY_B, PARTY_A, "terms", POSITION, PAYMENT, "settlement");
     }
 
     function testConfirmationRequiresEveryTermToMatch() public {
@@ -281,9 +400,10 @@ contract FxAtomicSwapTest {
             vm.prank(PARTY_B);
             swap.confirmTrade(
                 PARTY_A,
+                PARTY_B,
                 field == 0 ? "changed" : "terms",
-                field == 1 ? -POSITION + 1 : -POSITION,
-                field == 2 ? -PAYMENT + 1 : -PAYMENT,
+                field == 1 ? POSITION + 1 : POSITION,
+                field == 2 ? PAYMENT + 1 : PAYMENT,
                 field == 3 ? "changed" : "settlement"
             );
         }
@@ -292,19 +412,23 @@ contract FxAtomicSwapTest {
 
     function testCancellationRequiresInceptorAndEveryTermToMatch() public {
         _incept();
-        vm.expectRevert(FxAtomicSwap.InvalidParty.selector);
+        _expectUnauthorized(PARTY_B, PARTY_A);
         vm.prank(PARTY_B);
-        swap.cancelTrade(PARTY_A, "terms", POSITION, PAYMENT, "settlement");
-        vm.expectRevert(FxAtomicSwap.InvalidParty.selector);
+        swap.cancelTrade(PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
+        _expectUnauthorized(OUTSIDER, PARTY_A);
         vm.prank(OUTSIDER);
-        swap.cancelTrade(PARTY_B, "terms", POSITION, PAYMENT, "settlement");
+        swap.cancelTrade(PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
         vm.expectRevert(FxAtomicSwap.InvalidParty.selector);
         vm.prank(PARTY_A);
-        swap.cancelTrade(OUTSIDER, "terms", POSITION, PAYMENT, "settlement");
+        swap.cancelTrade(PARTY_A, OUTSIDER, "terms", POSITION, PAYMENT, "settlement");
+        vm.expectRevert(FxAtomicSwap.InvalidParty.selector);
+        vm.prank(PARTY_A);
+        swap.cancelTrade(OUTSIDER, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
         for (uint256 field; field < 4; field++) {
             vm.expectRevert(FxAtomicSwap.TermsMismatch.selector);
             vm.prank(PARTY_A);
             swap.cancelTrade(
+                PARTY_A,
                 PARTY_B,
                 field == 0 ? "changed" : "terms",
                 field == 1 ? POSITION + 1 : POSITION,
@@ -378,7 +502,7 @@ contract FxAtomicSwapTest {
         (FxAtomicSwap customSwap, ReturnToken customQuote) = _customQuoteSwap();
         customQuote.setBehavior(ReturnToken.Behavior.NoData);
         vm.prank(PARTY_B);
-        customSwap.confirmTrade(PARTY_A, "terms", -POSITION, -PAYMENT, "settlement");
+        customSwap.confirmTrade(PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
         require(customSwap.phase() == FxAtomicSwap.Phase.Settled, "phase");
         require(!router.activeSwap(address(customSwap)), "authorization");
         require(base.balanceOf(PARTY_A) == INITIAL_BALANCE + 100, "base receipt");
@@ -401,7 +525,7 @@ contract FxAtomicSwapTest {
                 )
             );
             vm.prank(PARTY_B);
-            customSwap.confirmTrade(PARTY_A, "terms", -POSITION, -PAYMENT, "settlement");
+            customSwap.confirmTrade(PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
             require(customSwap.phase() == FxAtomicSwap.Phase.Incepted, "phase not restored");
             require(router.activeSwap(address(customSwap)), "authorization not restored");
             require(base.balanceOf(PARTY_A) == INITIAL_BALANCE, "first transfer survived");
@@ -422,7 +546,9 @@ contract FxAtomicSwapTest {
         counterparty.approve(callbackToken, address(router), 100);
         callbackToken.setHook(counterparty);
         vm.prank(PARTY_A);
-        callbackSwap.inceptTrade(address(counterparty), "terms", POSITION, PAYMENT, "settlement");
+        callbackSwap.inceptTrade(
+            PARTY_A, address(counterparty), "terms", POSITION, PAYMENT, "settlement"
+        );
         counterparty.confirm(callbackSwap, PARTY_A);
         require(counterparty.attempted(), "callback not reached");
         require(counterparty.reentryError() == FxAtomicSwap.InvalidPhase.selector, "reentry guard");
@@ -434,11 +560,19 @@ contract FxAtomicSwapTest {
 
     function testUnsupportedTerminationOperationsRevert() public {
         vm.expectRevert(FxAtomicSwap.TerminationNotSupported.selector);
-        swap.requestTradeTermination("1", 0, "terms");
+        swap.requestTradeTermination("1", PARTY_A, 0, "terms");
         vm.expectRevert(FxAtomicSwap.TerminationNotSupported.selector);
-        swap.confirmTradeTermination("1", 0, "terms");
+        swap.confirmTradeTermination("1", PARTY_A, 0, "terms");
         vm.expectRevert(FxAtomicSwap.TerminationNotSupported.selector);
-        swap.cancelTradeTermination("1", 0, "terms");
+        swap.cancelTradeTermination("1", PARTY_A, 0, "terms");
+    }
+
+    function _expectUnauthorized(address caller, address party) private {
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                TradeAuthorizable.UnauthorizedTradeCaller.selector, caller, party
+            )
+        );
     }
 
     function _customQuoteSwap() private returns (FxAtomicSwap customSwap, ReturnToken customQuote) {
@@ -448,7 +582,7 @@ contract FxAtomicSwapTest {
         vm.prank(PARTY_A);
         customQuote.approve(address(router), 200);
         vm.prank(PARTY_A);
-        customSwap.inceptTrade(PARTY_B, "terms", POSITION, PAYMENT, "settlement");
+        customSwap.inceptTrade(PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
     }
 
     function _createSwap(
@@ -473,17 +607,17 @@ contract FxAtomicSwapTest {
 
     function _incept() private {
         vm.prank(PARTY_A);
-        swap.inceptTrade(PARTY_B, "terms", POSITION, PAYMENT, "settlement");
+        swap.inceptTrade(PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
     }
 
     function _confirm() private {
         vm.prank(PARTY_B);
-        swap.confirmTrade(PARTY_A, "terms", -POSITION, -PAYMENT, "settlement");
+        swap.confirmTrade(PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
     }
 
     function _cancel() private {
         vm.prank(PARTY_A);
-        swap.cancelTrade(PARTY_B, "terms", POSITION, PAYMENT, "settlement");
+        swap.cancelTrade(PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
     }
 
     function _assertTerminalCallsRevert() private {
