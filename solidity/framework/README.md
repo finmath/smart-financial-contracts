@@ -26,6 +26,10 @@ The lockfile pins dependencies. Hardhat downloads the Solidity compilers on the
 first build. Tests use an isolated chain with normal deployment-size limits and
 require no RPC endpoint, wallet or deployment configuration.
 
+The fixed-rate bond imports `ISDCTrade` through the local `@finmath.net/sdc`
+dependency at [`../ercs/erc-6123/`](../ercs/erc-6123/README.md). Interface changes
+there are therefore checked by the framework build and lifecycle tests.
+
 Run the original product demos with Node.js and Foundry:
 
 ```sh

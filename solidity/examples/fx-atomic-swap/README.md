@@ -96,9 +96,12 @@ From a checkout of `smart-financial-contracts`, enter the example directory:
 cd solidity/examples/fx-atomic-swap
 ```
 
-This standalone Foundry project includes five contracts, two Solidity test files,
-and its compiler configuration. Foundry 1.5.0 and Solidity 0.8.24 are used in CI.
-The tests require no external Solidity dependencies, running chain or renderer:
+This Foundry project includes the swap contracts, two Solidity test files,
+and its compiler configuration. `contracts/ISDCTrade.sol` imports the shared
+[ERC-6123 interface](../../ercs/erc-6123/contracts/ISDCTrade.sol) from this checkout;
+keep the repository layout when building the example. Foundry 1.5.0 and Solidity
+0.8.24 are used in CI. The tests require no downloaded Solidity dependencies,
+running chain or renderer:
 
 ```bash
 forge test -vv

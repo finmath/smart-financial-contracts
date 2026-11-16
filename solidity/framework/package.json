@@ -15,7 +15,7 @@
   "devDependencies": {
     "@finmath.net/dvp": "0.9.0",
     "@finmath.net/dvp-legacy": "npm:@finmath.net/dvp@0.7.0",
-    "@finmath.net/sdc": "0.8.0",
+    "@finmath.net/sdc": "file:../ercs/erc-6123",
     "@nomicfoundation/hardhat-toolbox-mocha-ethers": "^3.0.7",
     "@types/chai": "^5.2.3",
     "@types/chai-as-promised": "^8.0.2",

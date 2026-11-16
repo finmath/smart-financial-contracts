@@ -8,6 +8,26 @@ permissions:
   contents: read
 
 jobs:
+  erc6123:
+    name: ERC-6123 reference contract tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: solidity/ercs/erc-6123
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: solidity/ercs/erc-6123/package-lock.json
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Build contracts
+        run: npm run build
+      - name: Test ERC-6123 lifecycle
+        run: npm test
+
   framework:
     name: Framework and reference contract tests
     runs-on: ubuntu-latest

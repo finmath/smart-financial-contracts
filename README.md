@@ -17,7 +17,8 @@ compiler and dependency configurations for each package.
 | Java valuation oracle, derivative models, XML schemas and demos | [`src/`](src/), [`pom.xml`](pom.xml) | Java 17: `mvn clean verify` |
 | Derivative service frontend | [`frontend/`](frontend/) | `cd frontend && npm ci && npm run build` |
 | Derivative contracts | [`solidity/derivatives/`](solidity/derivatives/doc/README.md) | `cd solidity/derivatives && npm ci --ignore-scripts && npm test` |
-| Public ERC reference snapshots | [`solidity/ercs/`](solidity/ercs/) | Reference material |
+| ERC-6123 interfaces and reference implementations | [`solidity/ercs/erc-6123/`](solidity/ercs/erc-6123/README.md) | `cd solidity/ercs/erc-6123 && npm ci && npm test` |
+| ERC-7573 reference snapshot | [`solidity/ercs/erc-7573/`](solidity/ercs/erc-7573/) | Reference material |
 | Existing project documentation | [`src/site/markdown/`](src/site/markdown/index.md) | `mvn site` |
 
 The framework is an independent Node package. It does not change the existing Maven
