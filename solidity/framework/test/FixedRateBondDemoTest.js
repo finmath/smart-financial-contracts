@@ -62,7 +62,15 @@ describe("FixedRateBond with local demo integrations", function () {
     it("runs a registered bond from agreed resources through delivery, coupons and redemption", async function () {
         const { ethers, issuer, buyer, bond, registry, factory, termsResource, documentation,
             payment, cash, token, terms } = f;
-        expect(await registry.productOf(f.requestId)).to.equal(bond.target);
+        const request = await f.issuerDesk.tradeRequestState(f.requestId);
+        expect(request.requester).to.equal(buyer.address);
+        expect(request.product).to.equal(bond.target);
+        expect(request.productPayload).to.equal(encodeBondPayload(f.requestedTerms, f.couponPeriods));
+        expect(await bond.issuePrice()).to.equal(terms.issuePrice);
+        expect(terms.issuePrice).not.to.equal(f.requestedTerms.issuePrice);
+        expect(await registry.owner()).to.equal(f.operator.address);
+        expect(await bond.productProvider()).to.equal(issuer.address);
+        expect(await bond.tradeStatus()).to.equal(TRADE.inactive);
         expect(await registry.isRegisteredProduct(bond.target)).to.equal(true);
         expect(await factory.isFactoryDeployedProduct(bond.target)).to.equal(true);
         expect(await bond.productRegistry()).to.equal(registry.target);
@@ -484,11 +492,10 @@ describe("FixedRateBond with local demo integrations", function () {
     });
 
     it("rejects invalid denominations and calendar schedules through the real factory", async function () {
-        const { registry, issuer, bond, terms, couponPeriods, definitionId } = f;
-        const issue = (changes, periods = couponPeriods) => registry.connect(issuer).issueProductWithoutRequests({
-            productDefinitionId: definitionId,
-            productPayload: encodeBondPayload({ ...terms, ...changes }, periods)
-        });
+        const { registry, issuerDesk, bond, terms, couponPeriods, definitionId, definitionVersion } = f;
+        const issue = (changes, periods = couponPeriods) => issuerDesk.issueProduct(
+            definitionId, definitionVersion, encodeBondPayload({ ...terms, ...changes }, periods)
+        );
         await expect(issue({ specifiedDenomination: 10_000n })).to.be.revertedWithCustomError(bond, "InvalidAmount");
         await expect(issue({ couponsPerYear: 3 })).to.be.revertedWithCustomError(bond, "InvalidCouponFrequency");
         const broken = couponPeriods.map(period => ({ ...period }));

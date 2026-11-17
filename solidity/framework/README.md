@@ -48,7 +48,7 @@ Their existing source copies in `representable-contract-state` remain available.
 
 | Location | Purpose |
 | --- | --- |
-| `contracts/smartProductFramework/` | Core product interfaces, definitions, factories, client registry and indications |
+| `contracts/smartProductFramework/` | Product definitions, factories, client registry, party trading contracts and indications |
 | `contracts/erc8100/` | Representable-state interfaces and text resources |
 | `contracts/dvp/` | Settlement and decryption helpers |
 | [`contracts/examples/fixedRateBond/`](contracts/examples/fixedRateBond/README.md) | FixedRateBond, its library and factory, with local demo adapters |
@@ -62,11 +62,49 @@ The original product demos use their original framework interfaces and an isolat
 OpenZeppelin dependency. They are tested separately from the maintained core package.
 The general ERC-8100 renderer remains a separate project and service.
 
-Use `getActiveTradeRequests` for a definition's active requests,
-`tradeRequestState` for a known request, and `isRegisteredProduct` to verify an
-issued contract. Index the registry events for historical discovery.
-The active-request getter is unbounded and intended for small active request sets.
-Definition discovery remains paginated and bounded.
+## Trading between parties
+
+Deploy `ProductDefinitionRegistry(clientRegistryAddress)`. Its administrative
+owner follows `ClientRegistry.owner()`, including ownership transfers. The
+administrator publishes and versions product definitions. Each issued product
+records the client who provided it, its factory and the exact definition revision.
+
+An active client calls `createTradingContract()` on the factory returned by
+`registry.tradingContractFactory()`. Applications use
+`factory.tradingContractOf(client)` to discover that party's trading address.
+A client can authorize an application with `setOperator(application, true)` on
+its own trading contract and revoke it there later. This grants access to
+requests and product issuance. Agreement and settlement use the permissions
+of the individual product.
+
+The following workflow shows a buyer approaching an issuer.
+
+1. Read the current revision using `registry.productDefinitionState(id).version`.
+   From the buyer's trading contract call
+   `sendTradeRequest(issuerTradingAddress, id, version, payload)`. The buyer
+   can also call `createTradeRequest(id, version, payload)` directly on the
+   issuer's trading contract. Both routes record the same buyer identity.
+2. Read the request ID from `TradeRequested` on the issuer's trading contract.
+   That contract holds the request and exposes `tradeRequestState(requestId)`
+   and `getActiveTradeRequests(id)`. The buyer may withdraw it and the issuer
+   may reject it. A new definition revision or retirement expires open requests.
+   Suspension pauses new requests while allowing existing requests to be fulfilled.
+3. The issuer calls `issueProductForRequests(requestIds, offerPayload)` on its
+   own trading contract. The clients must still be eligible for the definition.
+   The product registry deploys through the anchored factory and registers the
+   product. A provider can also issue directly from an active definition through
+   its trading contract's `issueProduct(id, version, offerPayload)`.
+4. Fulfillment links the nonbinding requests to the issued product. The product
+   defines how the parties agree to the offered terms. For the fixed-rate bond
+   the issuer calls `inceptTrade` and the buyer calls `confirmTrade` on the bond.
+
+Use `registry.isRegisteredProduct(product)` to verify provenance. Index trading
+contract events for request history and registry events for definitions and issues.
+The active-request getter returns the entire set for a definition and recipient.
+For large inboxes, index the events and check the current definition revision and status.
+Deployments using the earlier registry keep their original addresses and state.
+Applications integrating a new deployment should discover its trading factory and
+read each request at the recipient's trading address.
 
 ## History and licensing
 

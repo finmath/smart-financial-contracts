@@ -49,7 +49,8 @@ export async function deployFixedRateBondDemo() {
     }
 
     const clients = await deploy("ClientRegistry", [operator.address]);
-    const registry = await deploy("ProductDefinitionRegistry", [issuer.address, clients.target]);
+    const registry = await deploy("ProductDefinitionRegistry", [clients.target]);
+    const tradingFactory = await ethers.getContractAt("TradingContractFactory", await registry.tradingContractFactory());
     const cash = await deploy("DemoToken", ["Demo cash (minor units)", "DCASH", operator.address, 200_000n]);
     const token = await deploy("DemoToken", ["Demo fixed-rate bond units", "DBOND", issuer.address, 3n]);
     const payment = await deploy("DemoPayment", [operator.address, cash.target]);
@@ -71,11 +72,14 @@ export async function deployFixedRateBondDemo() {
     for (const client of [issuer, buyer]) {
         await clients.registerClient({ client: client.address, lei: "00000000000000000098", bic: "DEMOXXXX" });
         await confirmReviewedClientData(clients, client, "00000000000000000098", "DEMOXXXX");
+        await tradingFactory.connect(client).createTradingContract();
     }
+    const issuerDesk = await ethers.getContractAt("TradingContract", await tradingFactory.tradingContractOf(issuer.address), issuer);
+    const buyerDesk = await ethers.getContractAt("TradingContract", await tradingFactory.tradingContractOf(buyer.address), buyer);
 
     const name = "Fixed-rate bond local demonstration";
     const definitionId = await registry.computeProductDefinitionId(name);
-    await registry.connect(issuer).publishProductDefinition({ name, productDefinition: {
+    await registry.connect(operator).publishProductDefinition({ name, productDefinition: {
         productFactory: factory.target, productTermsTemplate: termsResource.target,
         productDocumentationTemplate: documentation.target
     } });
@@ -91,11 +95,14 @@ export async function deployFixedRateBondDemo() {
         { startDate: DEMO_DATES.firstCoupon, endDate: DEMO_DATES.maturity,
             paymentDate: DEMO_DATES.maturity, referenceStartDate: DEMO_DATES.firstCoupon }
     ];
+    const requestedTerms = { ...terms, issuePrice: 980_000n };
+    const requestedPayload = encodeBondPayload(requestedTerms, couponPeriods);
     const payload = encodeBondPayload(terms, couponPeriods);
-    const params = { productDefinitionId: definitionId, productPayload: payload };
-    const requested = await eventArgs(await registry.connect(buyer).createTradeRequest(params), registry, "TradeRequested");
-    const issued = await eventArgs(await registry.connect(issuer).issueProductForRequests(
-        [requested.tradeRequestId], params), registry, "ProductIssued");
+    const definitionVersion = (await registry.getProductDefinition(definitionId)).version;
+    const requested = await eventArgs(await buyerDesk.sendTradeRequest(
+        issuerDesk.target, definitionId, definitionVersion, requestedPayload), issuerDesk, "TradeRequested");
+    const issued = await eventArgs(await issuerDesk.issueProductForRequests(
+        [requested.tradeRequestId], payload), registry, "ProductIssued");
     const bond = await ethers.getContractAt("FixedRateBond", issued.product);
     await payment.setProductAuthorized(bond.target, true);
     await cash.transfer(issuer.address, 100_000n);
@@ -109,6 +116,6 @@ export async function deployFixedRateBondDemo() {
         await bond.connect(buyer).confirmTrade(issuer.address, hash, terms.initialAggregateAmount, 0, "");
     }
     return { ethers, operator, issuer, buyer, outsider, clients, registry, cash, token, payment,
-        factory, bondLib, bond, terms, couponPeriods, definitionId, requestId: requested.tradeRequestId,
-        termsResource, documentation, agree, payload };
+        factory, bondLib, bond, issuerDesk, terms, couponPeriods, definitionId, definitionVersion, requestId: requested.tradeRequestId,
+        termsResource, documentation, agree, payload, requestedTerms };
 }

@@ -23,9 +23,12 @@ contract-size limits remain enabled, including for factory deployment.
 ## Lifecycle
 
 1. Deploy the existing asset, cash token, client and product registries, resources,
-   indications, payment adapter and linked libraries. Publish a definition whose
-   factory fixes the asset and payment addresses. Request the trade and issue the
-   bond through the registry. Authorize the bond in the payment adapter.
+   indications, payment adapter and linked libraries. The registry administrator
+   publishes a definition whose factory fixes the asset and payment addresses.
+   The buyer and issuer each open a trading contract. The buyer sends a
+   nonbinding request to the issuer's trading address. The issuer uses that
+   contract to issue a bond through the product registry. The payment operator
+   then authorizes the bond in the payment adapter.
 2. The issuer incepts the trade and the buyer confirms the same terms hash. That
    hash binds the economics, finalized resource hashes, asset and payment contracts.
    Confirmation enables delivery of the already-existing asset.
