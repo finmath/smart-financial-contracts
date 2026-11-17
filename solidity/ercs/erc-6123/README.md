@@ -17,13 +17,26 @@ the FX reference copy under `contracts/examples/` use the same trade conventions
 
 ## Explicit-party draft revision
 
-All three initiation methods take the same complete tuple:
+Inception returns a generated identifier. Confirmation and cancellation supply that
+identifier together with the complete inception tuple:
 
 ```solidity
-inceptTrade(inceptor, counterparty, tradeData, position, paymentAmount, initialSettlementData);
-confirmTrade(inceptor, counterparty, tradeData, position, paymentAmount, initialSettlementData);
-cancelTrade(inceptor, counterparty, tradeData, position, paymentAmount, initialSettlementData);
+string memory tradeId = inceptTrade(inceptor, counterparty, tradeData, position, paymentAmount, initialSettlementData);
+confirmTrade(tradeId, inceptor, counterparty, tradeData, position, paymentAmount, initialSettlementData);
+cancelTrade(tradeId, inceptor, counterparty, tradeData, position, paymentAmount, initialSettlementData);
 ```
+
+The contract generates a nonempty `tradeId` at inception and returns it to the caller.
+That identifier is lifetime-unique within the contract.
+Confirmation and cancellation repeat it together with every original term. A used
+identifier cannot be reused after cancellation or completion. In `SDCSingleTrade`,
+canceling an unconfirmed quote permits a fresh inception with a new identifier;
+stale confirmation or cancellation calls cannot consume that new quote, even when
+its economic terms are identical.
+
+The derivative and FX references share `TradeIdGenerator`, which generates decimal
+identifiers from a per-contract counter starting at `1`. The counter never resets,
+including after cancellation; a reverted transaction does not consume an identifier.
 
 The inceptor's amounts and participant order remain unchanged at confirmation.
 Each termination method takes `(tradeId, requestingParty, terminationPayment,
@@ -84,6 +97,7 @@ We provide the essential steps to compile the contracts and run the provided uni
 #### Implementations
 
 - `contracts/TradeAuthorizable.sol` - Per-contract, revocable operator approvals used by the reference implementations
+- `contracts/TradeIdGenerator.sol` - Contract-generated decimal identifiers that are never reused
 - `contracts/SDCSingleTrade.sol` - SDC abstract contract for an OTC Derivative (single trade case only)
 - `contracts/SDCSingleTradePledgedBalance.sol` - SDC full implementation for an OTC Derivative (single trade case only)
 - `contracts/ERC20Settlement.sol` - Mintable ERC-20 settlement token implementing `IAsyncTransfer` for unit tests
@@ -126,6 +140,7 @@ npx hardhat test
 
 ### Unreleased
 
+- Contract-generated, lifetime-unique trade IDs returned by inception and required for confirmation and cancellation.
 - Explicit trade participants and termination requester, independent of the caller.
 - Identical participant order and signed amounts across proposal, confirmation and cancellation.
 - Complete context matching and per-contract operator approvals in the reference implementations.

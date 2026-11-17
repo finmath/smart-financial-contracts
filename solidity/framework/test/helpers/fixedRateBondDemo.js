@@ -103,13 +103,14 @@ export async function deployFixedRateBondDemo() {
     await cash.connect(issuer).approve(payment.target, 100_000n);
     await cash.connect(buyer).approve(payment.target, 100_000n);
 
+    // Confirmation/cancellation include the generated ID; inception takes args.slice(1).
     async function tradeArguments(initialSettlementData = "") {
-        return [issuer.address, buyer.address, await bond.termsHash(),
+        return [await bond.tradeId(), issuer.address, buyer.address, await bond.termsHash(),
             -terms.initialAggregateAmount, await bond.settlementAmount(), initialSettlementData];
     }
     async function agree() {
         const args = await tradeArguments();
-        await bond.connect(issuer).inceptTrade(...args);
+        await bond.connect(issuer).inceptTrade(...args.slice(1));
         await bond.connect(buyer).confirmTrade(...args);
     }
     return { ethers, operator, issuer, buyer, outsider, clients, registry, cash, token, payment,

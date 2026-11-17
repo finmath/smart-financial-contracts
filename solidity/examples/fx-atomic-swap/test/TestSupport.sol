@@ -78,6 +78,8 @@ contract ReentrantCounterparty is ITransferHook {
     address private inceptor;
     bool public attempted;
     bytes4 public reentryError;
+    bytes4 public inceptionReentryError;
+    bytes4 public cancellationReentryError;
 
     function approve(ReturnToken token, address spender, uint256 amount) external {
         token.approve(spender, amount);
@@ -86,7 +88,7 @@ contract ReentrantCounterparty is ITransferHook {
     function confirm(FxAtomicSwap swap_, address inceptor_) external {
         swap = swap_;
         inceptor = inceptor_;
-        swap.confirmTrade(inceptor, address(this), "terms", 100, -200, "settlement");
+        swap.confirmTrade("1", inceptor, address(this), "terms", 100, -200, "settlement");
     }
 
     function onTransfer() external {
@@ -95,11 +97,34 @@ contract ReentrantCounterparty is ITransferHook {
             .call(
                 abi.encodeCall(
                     FxAtomicSwap.confirmTrade,
-                    (inceptor, address(this), "terms", 100, -200, "settlement")
+                    ("1", inceptor, address(this), "terms", 100, -200, "settlement")
                 )
             );
         require(!success, "reentrant confirmation succeeded");
         require(errorData.length >= 4, "missing reentry error");
         reentryError = bytes4(errorData);
+
+        // The counterparty is a legitimate inceptor for a future trade. Even
+        // though trade 1 is already marked Settled, opening trade 2 must wait
+        // until BOTH token legs and terminal events have completed.
+        (success, errorData) = address(swap)
+            .call(
+                abi.encodeCall(
+                    FxAtomicSwap.inceptTrade,
+                    (address(this), inceptor, "next terms", 100, -200, "settlement")
+                )
+            );
+        require(!success && errorData.length >= 4, "reentrant inception succeeded");
+        inceptionReentryError = bytes4(errorData);
+
+        (success, errorData) = address(swap)
+            .call(
+                abi.encodeCall(
+                    FxAtomicSwap.cancelTrade,
+                    ("1", inceptor, address(this), "terms", 100, -200, "settlement")
+                )
+            );
+        require(!success && errorData.length >= 4, "reentrant cancellation succeeded");
+        cancellationReentryError = bytes4(errorData);
     }
 }

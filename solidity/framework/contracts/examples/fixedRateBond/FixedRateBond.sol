@@ -261,11 +261,11 @@ contract FixedRateBond is FixedRateBondConventions, AbstractProduct, DemoAssetLo
         if (supplied != current) revert TermsMismatch(current, supplied);
 
         agreedTermsHash = current;
-        tradeInception = _tradeCommitment(inceptor, counterparty, tradeData,
+        string memory id = tradeId();
+        tradeInception = _tradeCommitment(id, inceptor, counterparty, tradeData,
             position, paymentAmount, initialSettlementData);
         _setTradeStatus(TradeStatus.Incepted);
 
-        string memory id = tradeId();
         emit TradeIncepted(issuer, buyer, id, tradeData, position, paymentAmount, initialSettlementData);
         return id;
     }
@@ -275,11 +275,11 @@ contract FixedRateBond is FixedRateBondConventions, AbstractProduct, DemoAssetLo
      * @dev Buyer-authorized acceptance repeats the issuer's original signed amounts.
      */
     function confirmTrade(
-        address inceptor, address counterparty, string memory tradeData,
+        string memory tradeId_, address inceptor, address counterparty, string memory tradeData,
         int256 position, int256 paymentAmount, string memory initialSettlementData
     ) external override inTradeStatus(TradeStatus.Incepted) nonReentrant {
         _requireTradeAuthorization(buyer);
-        _requireTradeTerms(inceptor, counterparty, tradeData, position, paymentAmount, initialSettlementData);
+        _requireTradeTerms(tradeId_, inceptor, counterparty, tradeData, position, paymentAmount, initialSettlementData);
         bytes32 current = termsHash();
         if (current != agreedTermsHash) revert TermsMismatch(agreedTermsHash, current);
 
@@ -295,11 +295,11 @@ contract FixedRateBond is FixedRateBondConventions, AbstractProduct, DemoAssetLo
      *      is terminal and leaves both parties' assets untouched.
      */
     function cancelTrade(
-        address inceptor, address counterparty, string memory tradeData,
+        string memory tradeId_, address inceptor, address counterparty, string memory tradeData,
         int256 position, int256 paymentAmount, string memory initialSettlementData
     ) external override inTradeStatus(TradeStatus.Incepted) {
         _requireTradeAuthorization(issuer);
-        _requireTradeTerms(inceptor, counterparty, tradeData, position, paymentAmount, initialSettlementData);
+        _requireTradeTerms(tradeId_, inceptor, counterparty, tradeData, position, paymentAmount, initialSettlementData);
         _setTradeStatus(TradeStatus.Cancelled);
         emit TradeCanceled(issuer, tradeId());
     }
@@ -317,20 +317,20 @@ contract FixedRateBond is FixedRateBondConventions, AbstractProduct, DemoAssetLo
     }
 
     function _requireTradeTerms(
-        address inceptor, address counterparty, string memory tradeData,
+        string memory tradeId_, address inceptor, address counterparty, string memory tradeData,
         int256 position, int256 paymentAmount, string memory initialSettlementData
     ) private view {
         _requireTradeEconomics(inceptor, counterparty, position, paymentAmount);
-        bytes32 supplied = _tradeCommitment(inceptor, counterparty, tradeData,
+        bytes32 supplied = _tradeCommitment(tradeId_, inceptor, counterparty, tradeData,
             position, paymentAmount, initialSettlementData);
         if (supplied != tradeInception) revert TermsMismatch(tradeInception, supplied);
     }
 
     function _tradeCommitment(
-        address inceptor, address counterparty, string memory tradeData,
+        string memory tradeId_, address inceptor, address counterparty, string memory tradeData,
         int256 position, int256 paymentAmount, string memory initialSettlementData
     ) private pure returns (bytes32) {
-        return keccak256(abi.encode(inceptor, counterparty, tradeData, position, paymentAmount, initialSettlementData));
+        return keccak256(abi.encode(tradeId_, inceptor, counterparty, tradeData, position, paymentAmount, initialSettlementData));
     }
 
     /**
@@ -598,7 +598,9 @@ contract FixedRateBond is FixedRateBondConventions, AbstractProduct, DemoAssetLo
         return keccak256(abi.encode(economicTermsHash, assetToken, paymentContract));
     }
 
-    /// @notice Returns the trade identifier of this bond.
+    /// @notice Returns this bond's contract-generated trade identifier, available before inception.
+    /// @dev This bond remains single-use: confirmation or cancellation cannot be followed
+    ///      by another inception.
     function tradeId() public view returns (string memory) {
         return ProductLib.tradeId(address(this));
     }

@@ -14,32 +14,54 @@ The scenario is:
 
 This example supports synchronous ERC-20 tokens that transfer the exact requested amount. Fee-on-transfer and rebasing tokens are outside its supported scope. The router checks call success and return data; it does not measure balance changes or enforce this token assumption on-chain.
 
-The ERC-6123 trade methods take `inceptor` and `counterparty` explicitly. Inception,
-confirmation and cancellation repeat the same parties, signed amounts and text fields.
+The ERC-6123 trade methods take `inceptor` and `counterparty` explicitly. On
+inception, the swap generates a new decimal trade ID (`"1"`, `"2"`, …), returns it,
+and emits it in `TradeIncepted`. Confirmation and cancellation take that generated
+ID followed by the original parties, signed amounts and text fields. IDs are unique
+for the instance's lifetime, including across canceled trades.
 A participant can submit its own action or approve an operator with
 `setTradeOperator(operator, true)` on this swap. Inception and cancellation require
 the inceptor's authority; confirmation requires the counterparty's authority.
-Approvals are per participant and per swap, can be revoked with `false`, and are
-checked when the action executes. ERC-20 router allowances alone do not authorize
+Approvals are per participant and per swap, remain valid for future trades on that
+instance until revoked with `false`, and are checked when the action executes.
+ERC-20 router allowances alone do not authorize
 a trade. Events and token transfers identify the participants, even when an operator
 submits the transaction. Factory creation still requires a named participant.
 
-Each swap handles one quote. The inceptor can withdraw an open quote with the ERC-6123 `cancelTrade` method. There is no clock-based expiry: the quote remains open until a confirmation or cancellation succeeds, with transaction order deciding the outcome if both are submitted. A settled or canceled swap cannot be reused; create another swap through the same factory for a new quote. The shared router and any remaining allowances can be reused.
+Each swap fixes two tokens, two parties and a settlement router at deployment, and
+handles successive trades with one open quote at a time. Amounts, textual terms and
+the inceptor's role are chosen per trade; the exchange rate is expressed by the two
+exact token amounts, with token decimals taken into account. Either fixed party may
+incept the next trade. Settlement or cancellation closes that trade permanently,
+then another inception generates a fresh ID on the same instance without another
+factory call.
+
+The inceptor can withdraw an open quote with `cancelTrade`. There is no clock-based
+expiry: the quote remains open until confirmation or cancellation succeeds, with
+transaction order deciding the outcome if both are submitted. Router registration
+lasts for the instance's lifetime; the router consumes each trade ID separately.
+Any remaining ERC-20 allowances can be reused, including by other swaps registered
+with the same router.
 
 The renderer is used for three live contract views:
 
 - the `BASE` token, showing metadata, total supply, tracked balances, and tracked allowances;
 - the `QUOTE` token, showing the same ERC-20 state; and
-- the `FxAtomicSwap`, showing its fixed configuration, lifecycle phase, and economic terms.
+- the `FxAtomicSwap`, showing its fixed configuration and the latest trade's ID,
+  lifecycle phase, and economic terms. Earlier records remain available through
+  `getTrade(tradeId)`; the live XML view follows the latest trade.
 
 For the swap view, the lifecycle phases are:
 
 | Phase | Numeric value | Meaning in this tour |
 |---|---:|---|
-| `Created` | 0 | Factory-created and router-registered; no economic terms stored yet |
+| `Created` | 0 | Factory-created and router-registered; no trade has been incepted yet |
 | `Incepted` | 1 | Party A's signed amounts and textual terms are stored |
 | `Settled` | 2 | Party B confirmed; both token transfers completed atomically |
-| `Canceled` | 3 | Inceptor withdrew the quote and revoked its router authorization; optional alternative to confirmation |
+| `Canceled` | 3 | Inceptor withdrew this quote and consumed its trade ID without transferring tokens |
+
+`Settled` and `Canceled` are final for their trade ID. A new inception changes the
+latest view to `Incepted`; it does not alter an earlier trade's terms or final phase.
 
 The two token views evolve alongside the swap:
 
@@ -108,7 +130,8 @@ cd solidity/examples/fx-atomic-swap
 
 This Foundry project includes the swap contracts, two Solidity test files,
 and its compiler configuration. `contracts/ISDCTrade.sol` imports the shared
-[ERC-6123 interface](../../ercs/erc-6123/contracts/ISDCTrade.sol) and `FxAtomicSwap.sol` imports the shared operator-authorization helper from this checkout;
+[ERC-6123 interface](../../ercs/erc-6123/contracts/ISDCTrade.sol) and `FxAtomicSwap.sol`
+imports the shared `TradeAuthorizable` and `TradeIdGenerator` helpers from this checkout;
 keep the repository layout when building the example. Foundry 1.5.0 and Solidity
 0.8.24 are used in CI. The tests require no downloaded Solidity dependencies,
 running chain or renderer:
@@ -373,7 +396,7 @@ The `Allowances` collections now contain the exact settlement permissions.
 
 The account and spender addresses in the XML are resolved from the same fixed block as the amounts.
 
-### 7. Create and register one `FxAtomicSwap`
+### 7. Create and register one reusable `FxAtomicSwap`
 
 `cast send` does not expose the Solidity return value directly. On this isolated local chain, first simulate the call to obtain the address the factory will create; then send the identical transaction. The predicted address remains valid provided no other `createSwap` transaction reaches this factory between the two commands.
 
@@ -395,7 +418,7 @@ printf '\nSwap: %s\n' "$SWAP"
 Verify that the swap is registered and that its fixed configuration matches the factory call:
 
 ```bash
-cast call "$ROUTER" "activeSwap(address)(bool)" "$SWAP" --rpc-url "$RPC_URL"
+cast call "$ROUTER" "registeredSwap(address)(bool)" "$SWAP" --rpc-url "$RPC_URL"
 cast call "$SWAP" "phase()(uint8)"                  --rpc-url "$RPC_URL"
 cast call "$SWAP" "partyA()(address)"               --rpc-url "$RPC_URL"
 cast call "$SWAP" "partyB()(address)"               --rpc-url "$RPC_URL"
@@ -407,8 +430,8 @@ cast call "$SWAP" "settlementRouter()(address)"     --rpc-url "$RPC_URL"
 Expected lifecycle values:
 
 <pre>
-activeSwap = true
-phase      = 0  (Created)
+registeredSwap = true
+phase          = 0  (Created)
 </pre>
 
 ### 8. ERC-8100 snapshot 1 — `Created`
@@ -429,7 +452,7 @@ At this point, the rendered representation should show conceptually:
 
 ```xml
 <Lifecycle>
-  <TradeId>1</TradeId>
+  <TradeId></TradeId>
   <Phase>0</Phase>
   <Inceptor>0x0000000000000000000000000000000000000000</Inceptor>
 </Lifecycle>
@@ -445,7 +468,8 @@ The root also records the rendered chain ID, swap address, and block number. Exa
 
 ### 9. Incept the trade as Party A
 
-The economic terms are signed from Party A's perspective:
+The economic terms are signed from Party A's perspective. Submit inception, then
+read the ID generated by the successful transaction:
 
 ```bash
 export TRADE_DATA="FX spot: Party A receives 1 BASE and pays 1.10 QUOTE"
@@ -460,7 +484,17 @@ cast send "$SWAP" \
   "-$QUOTE_QTY" \
   "$SETTLEMENT_DATA" \
   --rpc-url "$RPC_URL" --private-key "$PARTY_A_PK"
+
+# Read after successful inception on this isolated local chain.
+export TRADE_ID=$(cast call "$SWAP" "tradeId()(string)" --rpc-url "$RPC_URL" | tr -d '"')
+printf 'Generated trade ID: %s\n' "$TRADE_ID"
 ```
+
+For the first inception on a new instance, the generated ID is `"1"`. An on-chain
+client obtains it from the return value. Off-chain clients should obtain the ID
+from `TradeIncepted` in their transaction receipt. This isolated walkthrough uses
+the latest-ID getter after successful inception, assuming no intervening trade;
+do not predict an ID before submitting the transaction.
 
 Here:
 
@@ -473,6 +507,7 @@ Check the contract directly:
 
 ```bash
 cast call "$SWAP" "phase()(uint8)"                        --rpc-url "$RPC_URL"
+cast call "$SWAP" "tradeId()(string)"                     --rpc-url "$RPC_URL"
 cast call "$SWAP" "inceptor()(address)"                  --rpc-url "$RPC_URL"
 cast call "$SWAP" "position()(int256)"                   --rpc-url "$RPC_URL"
 cast call "$SWAP" "paymentAmount()(int256)"              --rpc-url "$RPC_URL"
@@ -499,6 +534,7 @@ start "http://localhost:8080/xml?contract=$SWAP"
 The same XML template now resolves to:
 
 <pre>
+TradeId               value of TRADE_ID (initially "1")
 Phase                 1
 Inceptor              Party A
 Position              1000000000000000000
@@ -511,11 +547,13 @@ The contract address remains the same, while the root block number advances.
 
 ### 10.1. Optional alternative: cancel the open quote as Party A
 
-To withdraw this quote, run the following **before step 11**. Party A must repeat the original inception terms, including their original signs:
+To withdraw this quote, run the following **before step 11**. Party A supplies the
+generated ID and repeats the original inception terms, including their original signs:
 
 ```bash
 cast send "$SWAP" \
-  "cancelTrade(address,address,string,int256,int256,string)" \
+  "cancelTrade(string,address,address,string,int256,int256,string)" \
+  "$TRADE_ID" \
   "$PARTY_A" \
   "$PARTY_B" \
   "$TRADE_DATA" \
@@ -525,14 +563,23 @@ cast send "$SWAP" \
   --rpc-url "$RPC_URL" --private-key "$PARTY_A_PK"
 
 cast call "$SWAP" "phase()(uint8)" --rpc-url "$RPC_URL"
-cast call "$ROUTER" "activeSwap(address)(bool)" "$SWAP" --rpc-url "$RPC_URL"
+cast call "$ROUTER" "registeredSwap(address)(bool)" "$SWAP" --rpc-url "$RPC_URL"
+cast call "$ROUTER" "consumedTrade(address,bytes32)(bool)" \
+  "$SWAP" "$(cast keccak "$(cast from-utf8 "$TRADE_ID")")" --rpc-url "$RPC_URL"
 ```
 
-Expected values are `phase = 3` (`Canceled`) and `activeSwap = false`. The swap changes its phase and calls `cancelAtomicSwap()` on the router in the same transaction, then emits `TradeCanceled`. If the router call fails, cancellation reverts completely.
+Expected values are `phase = 3` (`Canceled`), `registeredSwap = true` and
+`consumedTrade = true` for this ID. The swap changes the trade's phase and calls
+`cancelAtomicSwap(TRADE_ID)` on the router in the same transaction, then emits
+`TradeCanceled`. If the router call fails, cancellation reverts completely.
 
 Reload the swap's XML view to see the canceled phase with the inception terms retained. Both token balances and ERC-20 allowances remain unchanged: Party B still holds 5 BASE and allows 1 BASE to the router; Party A still holds 10 QUOTE and allows 1.10 QUOTE to the router.
 
-**After cancellation, skip steps 11–13 for this swap.** Confirmation and another inception will revert. To run the settlement path, repeat steps 7–10 with a new swap, then proceed to step 11. The existing router allowances can be reused because cancellation did not consume them.
+**After cancellation, do not confirm the canceled ID.** To run the settlement path,
+repeat steps 9–10 on this same swap, then proceed to step 11. The replacement
+inception generates a new ID, which step 9 captures in `TRADE_ID`; the canceled
+record remains closed. Existing router allowances remain sufficient because
+cancellation did not consume them.
 
 ### 10.2. Optional: submit confirmation through an operator
 
@@ -546,8 +593,10 @@ cast send "$SWAP" "setTradeOperator(address,bool)" "$DEPLOYER" true \
 For step 11, use `--private-key "$DEPLOYER_PK"` instead of `"$PARTY_B_PK"`.
 Keep all explicit trade arguments unchanged. The deployer receives no tokens;
 the router still transfers between Party A and Party B. The operator may act for
-Party B only on this swap; Party A would need to grant its own approval for an
-operator to incept or cancel on its behalf.
+Party B on this swap, including future trades until revoked. Party A would need to
+grant its own approval for an operator to incept or cancel on its behalf. In a
+future trade where Party B is the inceptor, its operator may incept or cancel that
+trade instead of confirming it.
 
 To revoke the approval, Party B submits:
 
@@ -561,11 +610,13 @@ still submit directly, or grant a new approval.
 
 ### 11. Confirm as Party B and settle both legs
 
-Party B must repeat the exact inception arguments. The amounts retain Party A's perspective; they are not negated:
+Party B supplies the generated ID followed by the exact inception arguments. The
+amounts retain Party A's perspective; they are not negated:
 
 ```bash
 cast send "$SWAP" \
-  "confirmTrade(address,address,string,int256,int256,string)" \
+  "confirmTrade(string,address,address,string,int256,int256,string)" \
+  "$TRADE_ID" \
   "$PARTY_A" \
   "$PARTY_B" \
   "$TRADE_DATA" \
@@ -577,14 +628,17 @@ cast send "$SWAP" \
 
 Within this single confirmation transaction:
 
-1. `FxAtomicSwap` verifies the caller's authority for Party B and matches both explicit parties, the original signed amounts, and the text terms.
-2. It changes `phase` to `Settled` before the external call.
-3. The router consumes `activeSwap[SWAP]`.
+1. `FxAtomicSwap` verifies the caller's authority for Party B and matches the open trade's ID, both explicit parties, original signed amounts, and text terms.
+2. It changes the trade's `phase` to `Settled` before the external call. A reentrancy guard covers inception, confirmation and cancellation on this instance.
+3. The router requires permanent registration and consumes `consumedTrade[SWAP][keccak256(bytes(TRADE_ID))]` before calling either token.
 4. The router transfers 1 BASE from Party B to Party A.
 5. The router transfers 1.10 QUOTE from Party A to Party B.
 6. Any failure reverts the complete transaction, including both token legs and both state changes.
 
-If confirmation fails, the swap remains `Incepted` and its router authorization remains active. Party B can retry after correcting the cause (for example, an insufficient allowance), or Party A can cancel using step 10.1. Once confirmation succeeds, cancellation is no longer possible.
+If confirmation fails, the trade remains `Incepted` and its router consumption flag
+remains `false`. Party B can retry after correcting the cause (for example, an
+insufficient allowance), or Party A can cancel using step 10.1. Once confirmation
+succeeds, this ID cannot be canceled, confirmed again or used for a new inception.
 
 ### 12. ERC-8100 snapshot 3 — `Settled`
 
@@ -602,7 +656,9 @@ On **Windows/Git Bash**, open the live view of the swap with:
 start "http://localhost:8080/xml?contract=$SWAP"
 ```
 
-The renderer should now show `Phase = 2`. The inceptor and inception terms remain represented, providing the semantic history of the completed single-use swap.
+The renderer should now show `Phase = 2` and the completed trade's ID and terms.
+The view retains this record until the next inception. `getTrade(TRADE_ID)` retains
+the record after subsequent trades too.
 
 ### 12.1. ERC-8100 token snapshots — atomic settlement reflected
 
@@ -632,7 +688,9 @@ The zero allowance rows remain present because the owner/spender pairs were prev
 
 ```bash
 cast call "$SWAP"   "phase()(uint8)"                         --rpc-url "$RPC_URL"
-cast call "$ROUTER" "activeSwap(address)(bool)" "$SWAP"     --rpc-url "$RPC_URL"
+cast call "$ROUTER" "registeredSwap(address)(bool)" "$SWAP" --rpc-url "$RPC_URL"
+cast call "$ROUTER" "consumedTrade(address,bytes32)(bool)" \
+  "$SWAP" "$(cast keccak "$(cast from-utf8 "$TRADE_ID")")" --rpc-url "$RPC_URL"
 
 cast call "$BASE_TOKEN"  "balanceOf(address)(uint256)" "$PARTY_A" --rpc-url "$RPC_URL"
 cast call "$BASE_TOKEN"  "balanceOf(address)(uint256)" "$PARTY_B" --rpc-url "$RPC_URL"
@@ -649,7 +707,8 @@ Expected final values:
 
 <pre>
 phase                  2  (Settled)
-activeSwap             false
+registeredSwap         true
+consumedTrade          true  (for this trade ID)
 
 Party A BASE           1000000000000000000  = 1 BASE
 Party A QUOTE          8900000              = 8.90 QUOTE
@@ -662,6 +721,66 @@ Party A QUOTE allowance 0
 
 Because exact settlement allowances were granted, both are fully consumed. The direct `cast call` results should match the two final ERC-8100 token representations.
 
+### 14. Settle a second trade on the same instance
+
+Keep `SWAP`, the tokens, parties and router unchanged. This time Party A receives
+1 BASE for 1.12 QUOTE. The rate comes from the exact amounts `1000000000000000000`
+and `1120000`; there is no separate exchange-rate field or rounding calculation.
+Replenish the allowances consumed by the first settlement, then capture the new
+ID after inception succeeds:
+
+```bash
+export SECOND_QUOTE_QTY="1120000"
+export SECOND_TRADE_DATA="FX spot: Party A receives 1 BASE and pays 1.12 QUOTE"
+
+cast send "$BASE_TOKEN" "approve(address,uint256)" "$ROUTER" "$BASE_QTY" \
+  --rpc-url "$RPC_URL" --private-key "$PARTY_B_PK"
+cast send "$QUOTE_TOKEN" "approve(address,uint256)" "$ROUTER" "$SECOND_QUOTE_QTY" \
+  --rpc-url "$RPC_URL" --private-key "$PARTY_A_PK"
+
+cast send "$SWAP" \
+  "inceptTrade(address,address,string,int256,int256,string)" \
+  "$PARTY_A" "$PARTY_B" "$SECOND_TRADE_DATA" \
+  "$BASE_QTY" "-$SECOND_QUOTE_QTY" "$SETTLEMENT_DATA" \
+  --rpc-url "$RPC_URL" --private-key "$PARTY_A_PK"
+
+# Read after successful inception, as in step 9.
+export SECOND_TRADE_ID=$(cast call "$SWAP" "tradeId()(string)" --rpc-url "$RPC_URL" | tr -d '"')
+printf 'Generated second trade ID: %s\n' "$SECOND_TRADE_ID"
+
+cast send "$SWAP" \
+  "confirmTrade(string,address,address,string,int256,int256,string)" \
+  "$SECOND_TRADE_ID" "$PARTY_A" "$PARTY_B" "$SECOND_TRADE_DATA" \
+  "$BASE_QTY" "-$SECOND_QUOTE_QTY" "$SETTLEMENT_DATA" \
+  --rpc-url "$RPC_URL" --private-key "$PARTY_B_PK"
+```
+
+Reloading the swap's XML view now shows the captured `SECOND_TRADE_ID`, `Phase = 2`,
+and the new amounts and text. The ID is `"2"` on the direct settlement path, or
+`"3"` if the optional cancellation and replacement were performed. Party A holds
+2 BASE and 7.78 QUOTE; Party B holds 3 BASE and 2.22 QUOTE. Both exact allowances
+are again fully consumed.
+
+The latest getters and both historical records can be queried independently:
+
+```bash
+cast call "$SWAP" "tradeId()(string)" --rpc-url "$RPC_URL"
+cast call "$SWAP" "phase()(uint8)" --rpc-url "$RPC_URL"
+
+cast call "$SWAP" "getTrade(string)((uint8,address,int256,int256,string,string))" \
+  "$TRADE_ID" --rpc-url "$RPC_URL"
+cast call "$SWAP" "getTrade(string)((uint8,address,int256,int256,string,string))" \
+  "$SECOND_TRADE_ID" --rpc-url "$RPC_URL"
+```
+
+Each record contains `(phase, inceptor, position, paymentAmount, tradeData,
+initialSettlementData)`. The counterparty is the other member of the fixed pair.
+Both records have phase `2`; the first payment amount remains `-1100000` and the
+second is `-1120000`. Unknown IDs revert. A stale confirmation or cancellation
+for the first ID cannot act on the second trade, even if their economic terms
+were identical. A third inception generates another ID and can proceed on the
+same instance; an inception while a quote is still open is rejected.
+
 ## Automated contract tests
 
 In a repository checkout, run the Foundry tests from the repository root:
@@ -670,7 +789,10 @@ In a repository checkout, run the Foundry tests from the repository root:
 forge test --root solidity/examples/fx-atomic-swap -vv
 ```
 
-The tests run locally without Anvil or the renderer service. They cover settlement, permissions and matching terms, cancellation and authorization revocation, failed-transfer rollback, and single-use lifecycle behavior.
+The tests run locally without Anvil or the renderer service. They cover settlement,
+permissions and matching terms, cancellation and authorization revocation,
+failed-transfer rollback, sequential reuse, trade history, ID replay protection,
+and reentrancy during settlement.
 
 ## Standards and renderer references
 
@@ -708,9 +830,11 @@ assembles the common definition context, invokes `deployProduct`, verifies the
 factory's provenance record, and records/emits the issued product. Trade requests
 and indications can be introduced later without putting them in this initial path.
 
-Issuance leaves the swap in `Created`. The actual participants and their authorized
-operators still establish the economic terms through the existing ERC-6123 inception
-and confirmation calls. The payload identifies the participants independently of
+Issuance leaves the reusable swap in `Created`. The actual participants and their
+authorized operators establish each trade's economic terms through the ERC-6123
+inception and confirmation calls, directly on that instance. Later trades require
+neither another deployment nor another registry issuance. The payload identifies
+the participants independently of
 `common.productProvider`, which the current registry sets to its owner. Issuance
 neither establishes party consent nor moves tokens. The no-request path does not
 perform automatic client-eligibility checks; any required policy would need an
@@ -722,8 +846,9 @@ integration sufficient for issuance and registry discovery. Generic consumers th
 expect `productFactory`, `productDefinitionId`, or the other `IProduct` getters would
 need a small metadata extension later. The existing FX ERC-8100 view remains usable.
 
-Keeping the reusable factory separate from each single-use swap preserves the
-shared router and avoids adding deployment responsibilities to every trade instance.
+The factory deploys and registers reusable bilateral swap instances; each instance
+manages its own sequence of trade records. A new token pair or participant pair
+requires a new instance, while new rates and amounts do not.
 The diagram below marks the proposed framework path separately from implemented calls.
 
 ## Sequence Diagram

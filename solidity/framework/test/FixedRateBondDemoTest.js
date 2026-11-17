@@ -102,7 +102,7 @@ describe("FixedRateBond with local demo integrations", function () {
         await bond.connect(issuer).inceptTrade(issuer.address, buyer.address, hash, -terms.initialAggregateAmount, await bond.settlementAmount(), "");
         expect(await bond.tradeStatus()).to.equal(TRADE.incepted);
         expect(await token.balanceOf(issuer.address)).to.equal(3n);
-        await bond.connect(buyer).confirmTrade(issuer.address, buyer.address, hash, -terms.initialAggregateAmount, await bond.settlementAmount(), "");
+        await bond.connect(buyer).confirmTrade(await bond.tradeId(), issuer.address, buyer.address, hash, -terms.initialAggregateAmount, await bond.settlementAmount(), "");
         expect(await bond.agreedTermsHash()).to.equal(hash);
         expect(await bond.tradeStatus()).to.equal(TRADE.confirmed);
         expect(await token.totalSupply()).to.equal(3n);
@@ -146,29 +146,35 @@ describe("FixedRateBond with local demo integrations", function () {
     it("requires the right parties and every inception field before enabling settlement", async function () {
         const { issuer, buyer, outsider, bond, token } = f;
         const args = await f.tradeArguments("initial market data");
-        await expect(bond.connect(outsider).inceptTrade(...args))
+        await expect(bond.connect(outsider).inceptTrade(...args.slice(1)))
             .to.be.revertedWithCustomError(bond, "UnauthorizedTradeCaller")
             .withArgs(outsider.address, issuer.address);
-        const wrongHash = [...args]; wrongHash[2] = ZeroHash;
-        await expect(bond.connect(issuer).inceptTrade(...wrongHash))
+        expect(await bond.tradeId()).to.equal(bond.target.toLowerCase());
+        expect(await bond.tradeStatus()).to.equal(TRADE.inactive);
+        const wrongHash = [...args]; wrongHash[3] = ZeroHash;
+        await expect(bond.connect(issuer).inceptTrade(...wrongHash.slice(1)))
             .to.be.revertedWithCustomError(bond, "TermsMismatch");
-        const invalidAmount = [...args]; invalidAmount[4] = 0;
-        await expect(bond.connect(issuer).inceptTrade(...invalidAmount))
+        const invalidAmount = [...args]; invalidAmount[5] = 0;
+        await expect(bond.connect(issuer).inceptTrade(...invalidAmount.slice(1)))
             .to.be.revertedWithCustomError(bond, "InvalidAmount");
-        await bond.connect(issuer).inceptTrade(...args);
-        await expect(bond.connect(issuer).inceptTrade(...args))
+        expect(await bond.connect(issuer).inceptTrade.staticCall(...args.slice(1))).to.equal(args[0]);
+        await bond.connect(issuer).inceptTrade(...args.slice(1));
+        expect(await bond.tradeId()).to.equal(args[0]);
+        await expect(bond.connect(issuer).inceptTrade(...args.slice(1)))
             .to.be.revertedWithCustomError(bond, "InvalidTradeStatus");
         await expect(bond.connect(outsider).confirmTrade(...args))
             .to.be.revertedWithCustomError(bond, "UnauthorizedTradeCaller")
             .withArgs(outsider.address, buyer.address);
 
         const changes = [
-            [0, outsider.address, "InvalidCounterparty"],
+            [0, "another trade", "TermsMismatch"],
+            [0, "", "TermsMismatch"],
             [1, outsider.address, "InvalidCounterparty"],
-            [2, ZeroHash, "TermsMismatch"],
-            [3, -args[3], "InvalidAmount"],
+            [2, outsider.address, "InvalidCounterparty"],
+            [3, ZeroHash, "TermsMismatch"],
             [4, -args[4], "InvalidAmount"],
-            [5, "changed initial data", "TermsMismatch"]
+            [5, -args[5], "InvalidAmount"],
+            [6, "changed initial data", "TermsMismatch"]
         ];
         for (const [index, value, error] of changes) {
             const changed = [...args]; changed[index] = value;
@@ -186,6 +192,8 @@ describe("FixedRateBond with local demo integrations", function () {
         expect(await bond.tradeStatus()).to.equal(TRADE.confirmed);
         expect(await token.totalSupply()).to.equal(3n);
         expect(await bond.assetToken()).to.equal(token.target);
+        await expect(bond.connect(issuer).inceptTrade(...args.slice(1)))
+            .to.be.revertedWithCustomError(bond, "InvalidTradeStatus");
         await expect(bond.connect(buyer).confirmTrade(...args))
             .to.be.revertedWithCustomError(bond, "InvalidTradeStatus");
     });
@@ -193,7 +201,7 @@ describe("FixedRateBond with local demo integrations", function () {
     it("allows only the issuer or its current operator to cancel the exact unconfirmed agreement", async function () {
         const { issuer, buyer, outsider, bond, token, cash } = f;
         const args = await f.tradeArguments();
-        await bond.connect(issuer).inceptTrade(...args);
+        await bond.connect(issuer).inceptTrade(...args.slice(1));
         for (const caller of [outsider, buyer]) {
             await expect(bond.connect(caller).cancelTrade(...args))
                 .to.be.revertedWithCustomError(bond, "UnauthorizedTradeCaller");
@@ -211,22 +219,24 @@ describe("FixedRateBond with local demo integrations", function () {
         expect(await cash.balanceOf(issuer.address)).to.equal(100_000n);
         expect(await cash.balanceOf(buyer.address)).to.equal(100_000n);
         for (const [caller, method] of [[issuer, "inceptTrade"], [buyer, "confirmTrade"], [outsider, "cancelTrade"]]) {
-            await expect(bond.connect(caller)[method](...args))
+            const callArgs = method === "inceptTrade" ? args.slice(1) : args;
+            await expect(bond.connect(caller)[method](...callArgs))
                 .to.be.revertedWithCustomError(bond, "InvalidTradeStatus");
         }
+        expect(await bond.tradeId()).to.equal(args[0]);
     });
 
     it("settles delegated agreement and redemption between the stored parties", async function () {
         const { ethers, issuer, buyer, operator, outsider, bond, token, cash, payment } = f;
         const args = await f.tradeArguments("delegated agreement");
-        const id = await bond.tradeId();
+        const id = args[0];
         // Payment-adapter authority and standing allowances confer no trade authority.
-        await expect(bond.connect(operator).inceptTrade(...args))
+        await expect(bond.connect(operator).inceptTrade(...args.slice(1)))
             .to.be.revertedWithCustomError(bond, "UnauthorizedTradeCaller");
         await bond.connect(issuer).setTradeOperator(operator.address, true);
-        await expect(bond.connect(operator).inceptTrade(...args))
+        await expect(bond.connect(operator).inceptTrade(...args.slice(1)))
             .to.emit(bond, "TradeIncepted").withArgs(issuer.address, buyer.address, id,
-                args[2], args[3], args[4], args[5]);
+                args[3], args[4], args[5], args[6]);
         await expect(bond.connect(operator).confirmTrade(...args))
             .to.be.revertedWithCustomError(bond, "UnauthorizedTradeCaller");
         // An operator cannot grant authority on behalf of its represented party.
@@ -399,7 +409,7 @@ describe("FixedRateBond with local demo integrations", function () {
 
     it("requires both parties to match a maturity proposal before enabling the return exchange", async function () {
         const { ethers, issuer, buyer, outsider, bond, token, payment } = f;
-        const id = await bond.tradeId();
+        const id = (await f.tradeArguments())[0];
         const amount = await bond.finalRedemptionAmount();
         const terms = "repay at contractual maturity";
         await expect(bond.connect(issuer).requestTradeTermination(id, issuer.address, -amount, terms))

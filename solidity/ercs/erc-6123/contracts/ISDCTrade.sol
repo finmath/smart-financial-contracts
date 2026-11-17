@@ -4,8 +4,9 @@ pragma solidity >=0.7.0;
 /**
  * @title ERC-6123 Smart Derivative Contract - Trade Events and Trade Functions.
  * @notice Trade parties are explicit and independent of the transaction caller.
- * @dev Inception, confirmation and cancellation describe the same fixed participants
- *      and identical terms. Signed amounts always use the inceptor's perspective.
+ * @dev Inception, confirmation and cancellation identify the same lifetime-unique
+ *      trade ID, fixed participants and identical terms. Signed amounts always use
+ *      the inceptor's perspective.
  *      Termination amounts always use the requesting party's perspective.
  *      Implementations must validate both the lifecycle state and authorization for
  *      the relevant participant. Supplying a party address does not grant authority.
@@ -46,13 +47,15 @@ interface ISDCTrade {
      * @notice Incepts a trade for the explicit parties and stores its immutable terms.
      * @dev Requires authorization for the inceptor and a valid lifecycle state.
      *      msg.sender identifies the caller, not either economic participant.
+     *      The contract generates a nonempty identifier that it has never used,
+     *      including for a canceled or completed inception.
      * @param inceptor The participant proposing the trade.
      * @param counterparty The opposite participant whose confirmation is required.
      * @param tradeData The trade specification, for example XML.
      * @param position Signed position from the inceptor's perspective.
      * @param paymentAmount Signed payment from the inceptor's perspective.
      * @param initialSettlementData The initial settlement or market data.
-     * @return tradeId The identifier of the incepted trade.
+     * @return tradeId The contract-generated, lifetime-unique identifier.
      */
     function inceptTrade(
         address inceptor,
@@ -68,6 +71,7 @@ interface ISDCTrade {
      * @dev Requires authorization for the counterparty. Every argument must match
      *      inception, including participant order and both signed amounts. Confirmation
      *      does not reverse the parties or negate the amounts.
+     * @param tradeId The original inception's identifier.
      * @param inceptor The original inceptor.
      * @param counterparty The original counterparty.
      * @param tradeData The original trade specification.
@@ -76,6 +80,7 @@ interface ISDCTrade {
      * @param initialSettlementData The original initial settlement data.
      */
     function confirmTrade(
+        string memory tradeId,
         address inceptor,
         address counterparty,
         string memory tradeData,
@@ -88,6 +93,7 @@ interface ISDCTrade {
      * @notice Cancels an unconfirmed trade on behalf of its inceptor.
      * @dev Requires authorization for the inceptor. Every argument must match the
      *      stored inception. A confirmed or already canceled proposal cannot be canceled.
+     * @param tradeId The original inception's identifier.
      * @param inceptor The original inceptor.
      * @param counterparty The original counterparty.
      * @param tradeData The original trade specification.
@@ -96,6 +102,7 @@ interface ISDCTrade {
      * @param initialSettlementData The original initial settlement data.
      */
     function cancelTrade(
+        string memory tradeId,
         address inceptor,
         address counterparty,
         string memory tradeData,

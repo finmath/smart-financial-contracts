@@ -26,9 +26,10 @@ contract-size limits remain enabled, including for factory deployment.
    indications, payment adapter and linked libraries. Publish a definition whose
    factory fixes the asset and payment addresses. Request the trade and issue the
    bond through the registry. Authorize the bond in the payment adapter.
-2. The issuer incepts the trade and the buyer confirms the identical inception
-   tuple: issuer, buyer, terms hash, negative aggregate nominal position, positive
-   issue-price payment, and initial settlement data. The terms hash binds the
+2. The issuer incepts the trade with the issuer, buyer, terms hash, negative aggregate
+   nominal position, positive issue-price payment, and initial settlement data. The
+   bond returns and emits its contract-generated trade identifier. The buyer confirms
+   that identifier and the identical inception terms. The terms hash binds the
    economics, finalized resource hashes, asset and payment contracts. Both calls
    use the issuer's perspective; confirmation does not reverse the signs.
    Confirmation enables delivery of the already-existing asset.
@@ -49,6 +50,11 @@ contract-size limits remain enabled, including for factory deployment.
 
 The four agreement states remain separate from `positionState`, which tracks
 delivery, the redemption proposal, authorization to return the units, and repayment.
+`inceptTrade` generates the trade identifier from the bond's own address;
+`confirmTrade` and `cancelTrade` take it as their first argument, followed by every
+inception field. `tradeId()` exposes this deterministic identifier even before
+inception. This bond remains single-use: confirmation or cancellation prevents
+another inception. Maturity repayment uses the same identifier in the termination methods.
 The requesting issuer can cancel an unmatched redemption proposal or an accepted
 proposal before an asset attempt is active; a later request starts a new proposal.
 

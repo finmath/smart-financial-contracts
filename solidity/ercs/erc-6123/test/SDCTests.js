@@ -55,7 +55,7 @@ describe("Livecycle Unit-Tests for SDC Plege Balance", () => {
      let trade_id ="";
      const incept_call = await sdc.connect(counterparty1).inceptTrade(counterparty1.address, counterparty2.address, trade_data, 1, -upfront, "initialMarketData");
      await expect(incept_call).to.emit(sdc, "TradeIncepted");
-     const confirm_call = await sdc.connect(counterparty2).confirmTrade(counterparty1.address, counterparty2.address, trade_data, 1, -upfront, "initialMarketData");
+     const confirm_call = await sdc.connect(counterparty2).confirmTrade(await sdc.getTradeID(), counterparty1.address, counterparty2.address, trade_data, 1, -upfront, "initialMarketData");
      await expect(confirm_call).to.emit(sdc, "TradeConfirmed");
      let trade_state =  await sdc.connect(counterparty1).getTradeState();
      await expect(trade_state).equal(TradeState.Settled);
@@ -76,7 +76,7 @@ describe("Livecycle Unit-Tests for SDC Plege Balance", () => {
         await token.connect(counterparty2).mint(counterparty2.address,initialLiquidityBalance);
         let sdc = await SDCFactory.deploy(counterparty1.address, counterparty2.address,token.address,0,0);
         const incept_call = await sdc.connect(counterparty1).inceptTrade(counterparty1.address, counterparty2.address, trade_data, 1, -upfront1, "initialMarketData");
-        const confirm_call = await sdc.connect(counterparty2).confirmTrade(counterparty1.address, counterparty2.address, trade_data, 1, -upfront1, "initialMarketData");
+        const confirm_call = await sdc.connect(counterparty2).confirmTrade(await sdc.getTradeID(), counterparty1.address, counterparty2.address, trade_data, 1, -upfront1, "initialMarketData");
         let cp1_balance = await token.connect(counterparty1).balanceOf(counterparty1.address);
         let cp2_balance = await token.connect(counterparty1).balanceOf(counterparty2.address);
         await expect(cp1_balance).equal(initialLiquidityBalance-upfront1);
@@ -90,7 +90,7 @@ describe("Livecycle Unit-Tests for SDC Plege Balance", () => {
         await token.connect(counterparty2).mint(counterparty2.address,initialLiquidityBalance);
         let sdc = await SDCFactory.deploy(counterparty1.address, counterparty2.address,token.address,0,0);
         const incept_call = await sdc.connect(counterparty1).inceptTrade(counterparty1.address, counterparty2.address, trade_data, -1, upfront1, "initialMarketData");
-        const confirm_call = await sdc.connect(counterparty2).confirmTrade(counterparty1.address, counterparty2.address, trade_data, -1, upfront1, "initialMarketData");
+        const confirm_call = await sdc.connect(counterparty2).confirmTrade(await sdc.getTradeID(), counterparty1.address, counterparty2.address, trade_data, -1, upfront1, "initialMarketData");
         let cp1_balance = await token.connect(counterparty1).balanceOf(counterparty1.address);
         let cp2_balance = await token.connect(counterparty1).balanceOf(counterparty2.address);
         await expect(cp1_balance).equal(initialLiquidityBalance+upfront1);
@@ -104,7 +104,7 @@ describe("Livecycle Unit-Tests for SDC Plege Balance", () => {
         await token.connect(counterparty2).mint(counterparty2.address,initialLiquidityBalance);
         let sdc = await SDCFactory.deploy(counterparty1.address, counterparty2.address,token.address,0,0);
         const incept_call = await sdc.connect(counterparty1).inceptTrade(counterparty1.address, counterparty2.address, trade_data, 1, upfront1, "initialMarketData");
-        const confirm_call = await sdc.connect(counterparty2).confirmTrade(counterparty1.address, counterparty2.address, trade_data, 1, upfront1, "initialMarketData");
+        const confirm_call = await sdc.connect(counterparty2).confirmTrade(await sdc.getTradeID(), counterparty1.address, counterparty2.address, trade_data, 1, upfront1, "initialMarketData");
         let cp1_balance = await token.connect(counterparty1).balanceOf(counterparty1.address);
         let cp2_balance = await token.connect(counterparty1).balanceOf(counterparty2.address);
         await expect(cp1_balance).equal(initialLiquidityBalance+upfront1);
@@ -119,7 +119,7 @@ describe("Livecycle Unit-Tests for SDC Plege Balance", () => {
      let trade_id ="";
      const incept_call = await sdc.connect(counterparty1).inceptTrade(counterparty1.address, counterparty2.address, trade_data, 1, upfront, "initialMarketData");
      await expect(incept_call).to.emit(sdc, "TradeIncepted");
-     const confirm_call = await sdc.connect(counterparty1).cancelTrade(counterparty1.address, counterparty2.address, trade_data, 1, upfront, "initialMarketData");
+     const confirm_call = await sdc.connect(counterparty1).cancelTrade(await sdc.getTradeID(), counterparty1.address, counterparty2.address, trade_data, 1, upfront, "initialMarketData");
      await expect(confirm_call).to.emit(sdc, "TradeCanceled");
      let trade_state =  await sdc.connect(counterparty1).getTradeState();
      await expect(trade_state).equal(TradeState.Inactive);
@@ -133,7 +133,7 @@ describe("Livecycle Unit-Tests for SDC Plege Balance", () => {
 
      const incept_call = await sdc.connect(counterparty1).inceptTrade(counterparty1.address, counterparty2.address, trade_data, 1, 2*initialLiquidityBalance, "initialMarketData");
      await expect(incept_call).to.emit(sdc, "TradeIncepted");
-     const confirm_call = await sdc.connect(counterparty2).confirmTrade(counterparty1.address, counterparty2.address, trade_data, 1, 2*initialLiquidityBalance, "initialMarketData");
+     const confirm_call = await sdc.connect(counterparty2).confirmTrade(await sdc.getTradeID(), counterparty1.address, counterparty2.address, trade_data, 1, 2*initialLiquidityBalance, "initialMarketData");
      await expect(confirm_call).to.emit(sdc, "TradeConfirmed");
      let trade_state =  await sdc.connect(counterparty1).getTradeState();
      await expect(trade_state).equal(TradeState.Terminated);
@@ -152,7 +152,7 @@ describe("Livecycle Unit-Tests for SDC Plege Balance", () => {
      let sdc = await SDCFactory.deploy(counterparty1.address, counterparty2.address,token.address,marginBufferAmount,terminationFee);
      const incept_call = await sdc.connect(counterparty1).inceptTrade(counterparty1.address, counterparty2.address, trade_data, 1, upfront, "initialMarketData");
      await expect(incept_call).to.emit(sdc, "TradeIncepted");
-     const confirm_call = sdc.connect(counterparty2).confirmTrade(counterparty1.address, counterparty2.address, "none", 1, upfront, "initialMarketData23");
+     const confirm_call = sdc.connect(counterparty2).confirmTrade(await sdc.getTradeID(), counterparty1.address, counterparty2.address, "none", 1, upfront, "initialMarketData23");
      await expect(confirm_call).to.be.revertedWith("Confirmation fails due to inconsistent trade data or wrong party address");
    });
 
@@ -163,7 +163,7 @@ describe("Livecycle Unit-Tests for SDC Plege Balance", () => {
      let sdc = await SDCFactory.deploy(counterparty1.address, counterparty2.address,token.address,marginBufferAmount,terminationFee);
      const incept_call = await sdc.connect(counterparty1).inceptTrade(counterparty1.address, counterparty2.address, trade_data, 1, upfront, "initialMarketData");
      await expect(incept_call).to.emit(sdc, "TradeIncepted");
-     const confirm_call = sdc.connect(counterparty2).cancelTrade(counterparty1.address, counterparty2.address, trade_data, 1, upfront, "initialMarketData");
+     const confirm_call = sdc.connect(counterparty2).cancelTrade(await sdc.getTradeID(), counterparty1.address, counterparty2.address, trade_data, 1, upfront, "initialMarketData");
      await expect(confirm_call).to.be.reverted;
    });
 
@@ -175,7 +175,7 @@ describe("Livecycle Unit-Tests for SDC Plege Balance", () => {
 
      const incept_call = await sdc.connect(counterparty1).inceptTrade(counterparty1.address, counterparty2.address, trade_data, 1, upfront, "initialMarketData");
      await expect(incept_call).to.emit(sdc, "TradeIncepted");
-     const confirm_call = sdc.connect(counterparty1).cancelTrade(counterparty1.address, counterparty2.address, trade_data, 1, upfront, "initialMarketData23");
+     const confirm_call = sdc.connect(counterparty1).cancelTrade(await sdc.getTradeID(), counterparty1.address, counterparty2.address, trade_data, 1, upfront, "initialMarketData23");
      await expect(confirm_call).to.be.revertedWith("Cancellation fails due to inconsistent trade data or wrong party address");
    });
 
@@ -188,7 +188,7 @@ describe("Livecycle Unit-Tests for SDC Plege Balance", () => {
      const receipt = await incept_call.wait();
      const event = receipt.events.find(event => event.event === 'TradeIncepted');
      const trade_id = event.args[2];
-     const confirm_call = await sdc.connect(counterparty2).confirmTrade(counterparty1.address, counterparty2.address, trade_data, 1, upfront, "initialMarketData");
+     const confirm_call = await sdc.connect(counterparty2).confirmTrade(await sdc.getTradeID(), counterparty1.address, counterparty2.address, trade_data, 1, upfront, "initialMarketData");
      await expect(confirm_call).to.emit(sdc, "TradeConfirmed");
      const terminate_call = await sdc.connect(counterparty1).requestTradeTermination(trade_id, counterparty1.address, terminationPayment, "terminationTerms");
      await expect(terminate_call).to.emit(sdc, "TradeTerminationRequest");
@@ -214,7 +214,7 @@ describe("Livecycle Unit-Tests for SDC Plege Balance", () => {
         const receipt = await incept_call.wait();
         const event = receipt.events.find(event => event.event === 'TradeIncepted');
         const trade_id = event.args[2];
-        const confirm_call = await sdc.connect(counterparty2).confirmTrade(counterparty1.address, counterparty2.address, trade_data, 1, 0, "initialMarketData");
+        const confirm_call = await sdc.connect(counterparty2).confirmTrade(await sdc.getTradeID(), counterparty1.address, counterparty2.address, trade_data, 1, 0, "initialMarketData");
 
         // Note: terminationPayment is considered to be viewed from the requester here.
         const terminate_call = await sdc.connect(counterparty2).requestTradeTermination(trade_id, counterparty2.address, -terminationPayment, "terminationTerms");
@@ -237,7 +237,7 @@ describe("Livecycle Unit-Tests for SDC Plege Balance", () => {
         const receipt = await incept_call.wait();
         const event = receipt.events.find(event => event.event === 'TradeIncepted');
         const trade_id = event.args[2];
-        const confirm_call = await sdc.connect(counterparty2).confirmTrade(counterparty1.address, counterparty2.address, trade_data, 1, 0, "initialMarketData");
+        const confirm_call = await sdc.connect(counterparty2).confirmTrade(await sdc.getTradeID(), counterparty1.address, counterparty2.address, trade_data, 1, 0, "initialMarketData");
         // Note: terminationPayment is considered to be viewed from the requester here.
         const terminate_call = await sdc.connect(counterparty1).requestTradeTermination(trade_id, counterparty1.address, terminationPayment, "terminationTerms");
         const confirm_terminate_call = await sdc.connect(counterparty2).confirmTradeTermination(trade_id, counterparty1.address, terminationPayment, "terminationTerms");
@@ -256,7 +256,7 @@ describe("Livecycle Unit-Tests for SDC Plege Balance", () => {
      let trade_id ="";
      const incept_call = await sdc.connect(counterparty1).inceptTrade(counterparty1.address, counterparty2.address, trade_data, 1, upfront, "initialMarketData");
      await expect(incept_call).to.emit(sdc, "TradeIncepted");
-     const confirm_call = await sdc.connect(counterparty2).confirmTrade(counterparty1.address, counterparty2.address, trade_data, 1, upfront, "initialMarketData");
+     const confirm_call = await sdc.connect(counterparty2).confirmTrade(await sdc.getTradeID(), counterparty1.address, counterparty2.address, trade_data, 1, upfront, "initialMarketData");
      await expect(confirm_call).to.emit(sdc, "TradeConfirmed");
      const initSettlementPhase = sdc.connect(counterparty2).initiateSettlement();
      await expect(initSettlementPhase).to.emit(sdc, "SettlementRequested");
@@ -287,7 +287,7 @@ describe("Livecycle Unit-Tests for SDC Plege Balance", () => {
 
         const incept_call = await sdc.connect(counterparty1).inceptTrade(counterparty1.address, counterparty2.address, trade_data, 1, -upfront_max, "initialMarketData");
         await expect(incept_call).to.emit(sdc, "TradeIncepted");
-        const confirm_call = await sdc.connect(counterparty2).confirmTrade(counterparty1.address, counterparty2.address, trade_data, 1, -upfront_max, "initialMarketData");
+        const confirm_call = await sdc.connect(counterparty2).confirmTrade(await sdc.getTradeID(), counterparty1.address, counterparty2.address, trade_data, 1, -upfront_max, "initialMarketData");
         await expect(confirm_call).to.emit(sdc, "TradeConfirmed");
 
         const initSettlementPhase = sdc.connect(counterparty2).initiateSettlement();
@@ -316,7 +316,7 @@ describe("Livecycle Unit-Tests for SDC Plege Balance", () => {
         const receipt = await incept_call.wait();
         const event = receipt.events.find(event => event.event === 'TradeIncepted');
         const trade_id = event.args[2];
-        const confirm_call = await sdc.connect(counterparty2).confirmTrade(counterparty1.address, counterparty2.address, trade_data, 1, 0, "initialMarketData");
+        const confirm_call = await sdc.connect(counterparty2).confirmTrade(await sdc.getTradeID(), counterparty1.address, counterparty2.address, trade_data, 1, 0, "initialMarketData");
         await expect(confirm_call).to.emit(sdc, "TradeConfirmed");
         const terminate_call = await sdc.connect(counterparty1).requestTradeTermination(trade_id, counterparty1.address, 10000000, "terminationTerms");
         await expect(terminate_call).to.emit(sdc, "TradeTerminationRequest");

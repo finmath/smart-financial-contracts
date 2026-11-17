@@ -54,13 +54,13 @@ contract FxAtomicSwapTest {
 
     function testFactoryRegistersFixedConfiguration() public view {
         require(router.factory() == address(factory), "router factory");
-        require(router.activeSwap(address(swap)), "not registered");
+        require(router.registeredSwap(address(swap)), "not registered");
         require(swap.phase() == FxAtomicSwap.Phase.Created, "phase");
         require(swap.partyA() == PARTY_A && swap.partyB() == PARTY_B, "parties");
         require(address(swap.baseToken()) == address(base), "base token");
         require(address(swap.quoteToken()) == address(quote), "quote token");
         require(address(swap.settlementRouter()) == address(router), "router");
-        require(keccak256(bytes(swap.tradeId())) == keccak256("1"), "trade id");
+        require(bytes(swap.tradeId()).length == 0, "unexpected trade id");
     }
 
     function testInceptionStoresExactTermsAndEmitsEvent() public {
@@ -117,10 +117,10 @@ contract FxAtomicSwapTest {
         vm.prank(delegated ? OUTSIDER : inceptor);
         swap.inceptTrade(inceptor, confirmer, "terms", position, payment, "settlement");
         vm.prank(delegated ? OUTSIDER : confirmer);
-        swap.confirmTrade(inceptor, confirmer, "terms", position, payment, "settlement");
+        swap.confirmTrade("1", inceptor, confirmer, "terms", position, payment, "settlement");
 
         require(swap.phase() == FxAtomicSwap.Phase.Settled, "phase");
-        require(!router.activeSwap(address(swap)), "authorization");
+        require(router.consumedTrade(address(swap), keccak256("1")), "authorization");
         require(base.balanceOf(basePayer) == INITIAL_BALANCE, "base paid");
         require(base.balanceOf(baseReceiver) == INITIAL_BALANCE + baseAmount, "base received");
         require(quote.balanceOf(baseReceiver) == INITIAL_BALANCE, "quote paid");
@@ -144,7 +144,7 @@ contract FxAtomicSwapTest {
         vm.expectEmit(false, false, false, true, address(swap));
         emit TradeConfirmed(PARTY_B, "1");
         vm.prank(confirmationOperator);
-        swap.confirmTrade(PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
+        swap.confirmTrade("1", PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
         _assertSettled();
         require(
             base.balanceOf(OUTSIDER) == 0 && quote.balanceOf(OUTSIDER) == 0,
@@ -156,19 +156,22 @@ contract FxAtomicSwapTest {
         );
         vm.expectRevert(FxAtomicSwap.InvalidPhase.selector);
         vm.prank(confirmationOperator);
-        swap.confirmTrade(PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
+        swap.confirmTrade("1", PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
     }
 
-    function testDelegatedCancellationRevokesRouterAndEmitsInceptor() public {
+    function testDelegatedCancellationConsumesTradeAndEmitsInceptor() public {
         _incept();
         vm.prank(PARTY_A);
         swap.setTradeOperator(OUTSIDER, true);
         vm.expectEmit(false, false, false, true, address(swap));
         emit TradeCanceled(PARTY_A, "1");
         vm.prank(OUTSIDER);
-        swap.cancelTrade(PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
+        swap.cancelTrade("1", PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
         require(swap.phase() == FxAtomicSwap.Phase.Canceled, "phase");
-        require(!router.activeSwap(address(swap)), "authorization survived cancellation");
+        require(
+            router.consumedTrade(address(swap), keccak256("1")),
+            "authorization survived cancellation"
+        );
         _assertOriginalBalancesAndAllowances();
         _assertTerminalCallsRevert();
     }
@@ -181,13 +184,13 @@ contract FxAtomicSwapTest {
         // Inceptor authorization and both standing token allowances do not grant B's consent.
         _expectUnauthorized(OUTSIDER, PARTY_B);
         vm.prank(OUTSIDER);
-        swap.confirmTrade(PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
+        swap.confirmTrade("1", PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
         vm.prank(OUTSIDER);
         swap.setTradeOperator(address(0xD), true);
         require(!swap.isTradeOperator(PARTY_B, address(0xD)), "delegation escaped grantor");
         _expectUnauthorized(address(0xD), PARTY_B);
         vm.prank(address(0xD));
-        swap.confirmTrade(PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
+        swap.confirmTrade("1", PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
         _assertOpenAndUnspent();
     }
 
@@ -199,12 +202,12 @@ contract FxAtomicSwapTest {
         swap.setTradeOperator(OUTSIDER, false);
         _expectUnauthorized(OUTSIDER, PARTY_B);
         vm.prank(OUTSIDER);
-        swap.confirmTrade(PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
+        swap.confirmTrade("1", PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
         _assertOpenAndUnspent();
         vm.prank(PARTY_B);
         swap.setTradeOperator(OUTSIDER, true);
         vm.prank(OUTSIDER);
-        swap.confirmTrade(PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
+        swap.confirmTrade("1", PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
         _assertSettled();
     }
 
@@ -226,20 +229,23 @@ contract FxAtomicSwapTest {
         swap.setTradeOperator(OUTSIDER, true);
         vm.expectRevert(FxAtomicSwap.TermsMismatch.selector);
         vm.prank(OUTSIDER);
-        swap.confirmTrade(PARTY_A, PARTY_B, "terms", -POSITION, -PAYMENT, "settlement");
+        swap.confirmTrade("1", PARTY_A, PARTY_B, "terms", -POSITION, -PAYMENT, "settlement");
         vm.expectRevert(FxAtomicSwap.InvalidParty.selector);
         vm.prank(OUTSIDER);
-        swap.confirmTrade(PARTY_A, OUTSIDER, "terms", POSITION, PAYMENT, "settlement");
+        swap.confirmTrade("1", PARTY_A, OUTSIDER, "terms", POSITION, PAYMENT, "settlement");
         _assertOpenAndUnspent();
     }
 
-    function testCancellationExpiresQuoteAndClearsAuthorizationWithoutSpending() public {
+    function testCancellationConsumesTradeWithoutSpending() public {
         _incept();
         vm.expectEmit(false, false, false, true, address(swap));
         emit TradeCanceled(PARTY_A, "1");
         _cancel();
         require(swap.phase() == FxAtomicSwap.Phase.Canceled, "phase");
-        require(!router.activeSwap(address(swap)), "authorization survives cancellation");
+        require(
+            router.consumedTrade(address(swap), keccak256("1")),
+            "authorization survives cancellation"
+        );
         require(swap.position() == POSITION && swap.paymentAmount() == PAYMENT, "lost terms");
         _assertOriginalBalancesAndAllowances();
         _assertTerminalCallsRevert();
@@ -249,9 +255,9 @@ contract FxAtomicSwapTest {
         vm.prank(PARTY_B);
         swap.inceptTrade(PARTY_B, PARTY_A, "terms", -POSITION, -PAYMENT, "settlement");
         vm.prank(PARTY_B);
-        swap.cancelTrade(PARTY_B, PARTY_A, "terms", -POSITION, -PAYMENT, "settlement");
+        swap.cancelTrade("1", PARTY_B, PARTY_A, "terms", -POSITION, -PAYMENT, "settlement");
         require(swap.phase() == FxAtomicSwap.Phase.Canceled, "phase");
-        require(!router.activeSwap(address(swap)), "authorization");
+        require(router.consumedTrade(address(swap), keccak256("1")), "authorization");
         _assertOriginalBalancesAndAllowances();
     }
 
@@ -261,14 +267,16 @@ contract FxAtomicSwapTest {
             new FxAtomicSwap(_token(base), _token(quote), PARTY_A, PARTY_B, router);
         vm.prank(PARTY_A);
         unregistered.inceptTrade(PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
-        vm.expectRevert(ERC20AtomicSwapSettlementRouter.InactiveSwap.selector);
+        vm.expectRevert(ERC20AtomicSwapSettlementRouter.UnregisteredSwap.selector);
         vm.prank(PARTY_A);
-        unregistered.cancelTrade(PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
+        unregistered.cancelTrade("1", PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
         require(
             unregistered.phase() == FxAtomicSwap.Phase.Incepted,
             "cancellation phase survived revert"
         );
-        require(router.activeSwap(address(swap)), "unrelated authorization changed");
+        require(
+            !router.consumedTrade(address(swap), keccak256("1")), "unrelated authorization changed"
+        );
         _assertOriginalBalancesAndAllowances();
     }
 
@@ -283,13 +291,16 @@ contract FxAtomicSwapTest {
         FxAtomicSwap second = _createSwap(_token(base), _token(quote), PARTY_B, PARTY_A);
         _incept();
         _cancel();
-        require(router.activeSwap(address(second)), "cancellation affected another swap");
+        require(
+            !router.consumedTrade(address(second), keccak256("1")),
+            "cancellation affected another swap"
+        );
         vm.prank(PARTY_A);
         second.inceptTrade(PARTY_A, PARTY_B, "new terms", POSITION, PAYMENT, "settlement");
         vm.prank(PARTY_B);
-        second.confirmTrade(PARTY_A, PARTY_B, "new terms", POSITION, PAYMENT, "settlement");
+        second.confirmTrade("1", PARTY_A, PARTY_B, "new terms", POSITION, PAYMENT, "settlement");
         require(second.phase() == FxAtomicSwap.Phase.Settled, "second swap did not settle");
-        require(!router.activeSwap(address(second)), "second authorization");
+        require(router.consumedTrade(address(second), keccak256("1")), "second authorization");
         require(swap.phase() == FxAtomicSwap.Phase.Canceled, "first swap changed");
     }
 
@@ -321,11 +332,15 @@ contract FxAtomicSwapTest {
     function testRouterRejectsUnregisteredCallersAndUnauthorizedRegistration() public {
         vm.expectRevert(ERC20AtomicSwapSettlementRouter.NotFactory.selector);
         router.registerSwap(address(swap));
-        vm.expectRevert(ERC20AtomicSwapSettlementRouter.InactiveSwap.selector);
-        router.settleAtomicSwap(_token(base), _token(quote), PARTY_A, PARTY_B, POSITION, PAYMENT);
-        vm.expectRevert(ERC20AtomicSwapSettlementRouter.InactiveSwap.selector);
-        router.cancelAtomicSwap();
-        require(router.activeSwap(address(swap)), "outsider changed authorization");
+        vm.expectRevert(ERC20AtomicSwapSettlementRouter.UnregisteredSwap.selector);
+        router.settleAtomicSwap(
+            "1", _token(base), _token(quote), PARTY_A, PARTY_B, POSITION, PAYMENT
+        );
+        vm.expectRevert(ERC20AtomicSwapSettlementRouter.UnregisteredSwap.selector);
+        router.cancelAtomicSwap("1");
+        require(
+            !router.consumedTrade(address(swap), keccak256("1")), "outsider changed authorization"
+        );
         _assertOriginalBalancesAndAllowances();
     }
 
@@ -364,6 +379,7 @@ contract FxAtomicSwapTest {
             swap.inceptTrade(PARTY_A, PARTY_B, "terms", positions[i], payments[i], "settlement");
         }
         require(swap.phase() == FxAtomicSwap.Phase.Created, "failed inception changed phase");
+        require(keccak256(bytes(_incept())) == keccak256("1"), "failed inception consumed id");
     }
 
     function testConfirmAndCancelRequireInception() public {
@@ -371,26 +387,26 @@ contract FxAtomicSwapTest {
         _confirm();
         vm.expectRevert(FxAtomicSwap.InvalidPhase.selector);
         _cancel();
-        require(router.activeSwap(address(swap)), "authorization changed");
+        require(!router.consumedTrade(address(swap), keccak256("1")), "authorization changed");
     }
 
     function testConfirmationRequiresCounterpartyAndOriginalInceptor() public {
         _incept();
         _expectUnauthorized(PARTY_A, PARTY_B);
         vm.prank(PARTY_A);
-        swap.confirmTrade(PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
+        swap.confirmTrade("1", PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
         _expectUnauthorized(OUTSIDER, PARTY_B);
         vm.prank(OUTSIDER);
-        swap.confirmTrade(PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
+        swap.confirmTrade("1", PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
         vm.expectRevert(FxAtomicSwap.InvalidParty.selector);
         vm.prank(PARTY_B);
-        swap.confirmTrade(OUTSIDER, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
+        swap.confirmTrade("1", OUTSIDER, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
         vm.expectRevert(FxAtomicSwap.InvalidParty.selector);
         vm.prank(PARTY_B);
-        swap.confirmTrade(PARTY_A, OUTSIDER, "terms", POSITION, PAYMENT, "settlement");
+        swap.confirmTrade("1", PARTY_A, OUTSIDER, "terms", POSITION, PAYMENT, "settlement");
         vm.expectRevert(FxAtomicSwap.InvalidParty.selector);
         vm.prank(PARTY_B);
-        swap.confirmTrade(PARTY_B, PARTY_A, "terms", POSITION, PAYMENT, "settlement");
+        swap.confirmTrade("1", PARTY_B, PARTY_A, "terms", POSITION, PAYMENT, "settlement");
     }
 
     function testConfirmationRequiresEveryTermToMatch() public {
@@ -399,6 +415,7 @@ contract FxAtomicSwapTest {
             vm.expectRevert(FxAtomicSwap.TermsMismatch.selector);
             vm.prank(PARTY_B);
             swap.confirmTrade(
+                "1",
                 PARTY_A,
                 PARTY_B,
                 field == 0 ? "changed" : "terms",
@@ -414,20 +431,21 @@ contract FxAtomicSwapTest {
         _incept();
         _expectUnauthorized(PARTY_B, PARTY_A);
         vm.prank(PARTY_B);
-        swap.cancelTrade(PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
+        swap.cancelTrade("1", PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
         _expectUnauthorized(OUTSIDER, PARTY_A);
         vm.prank(OUTSIDER);
-        swap.cancelTrade(PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
+        swap.cancelTrade("1", PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
         vm.expectRevert(FxAtomicSwap.InvalidParty.selector);
         vm.prank(PARTY_A);
-        swap.cancelTrade(PARTY_A, OUTSIDER, "terms", POSITION, PAYMENT, "settlement");
+        swap.cancelTrade("1", PARTY_A, OUTSIDER, "terms", POSITION, PAYMENT, "settlement");
         vm.expectRevert(FxAtomicSwap.InvalidParty.selector);
         vm.prank(PARTY_A);
-        swap.cancelTrade(OUTSIDER, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
+        swap.cancelTrade("1", OUTSIDER, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
         for (uint256 field; field < 4; field++) {
             vm.expectRevert(FxAtomicSwap.TermsMismatch.selector);
             vm.prank(PARTY_A);
             swap.cancelTrade(
+                "1",
                 PARTY_A,
                 PARTY_B,
                 field == 0 ? "changed" : "terms",
@@ -450,7 +468,7 @@ contract FxAtomicSwapTest {
         );
         _confirm();
         require(swap.phase() == FxAtomicSwap.Phase.Incepted, "phase not restored");
-        require(router.activeSwap(address(swap)), "authorization not restored");
+        require(!router.consumedTrade(address(swap), keccak256("1")), "authorization not restored");
         require(base.balanceOf(PARTY_A) == INITIAL_BALANCE, "first transfer survived");
         require(base.balanceOf(PARTY_B) == INITIAL_BALANCE, "base payer balance");
         require(base.allowance(PARTY_B, address(router)) == INITIAL_BALANCE, "base allowance");
@@ -478,7 +496,10 @@ contract FxAtomicSwapTest {
         require(base.allowance(PARTY_B, address(router)) == INITIAL_BALANCE, "base allowance");
         _cancel();
         require(swap.phase() == FxAtomicSwap.Phase.Canceled, "cannot cancel failed settlement");
-        require(!router.activeSwap(address(swap)), "authorization survives cancellation");
+        require(
+            router.consumedTrade(address(swap), keccak256("1")),
+            "authorization survives cancellation"
+        );
     }
 
     function testFirstLegFailureLeavesQuoteUnspent() public {
@@ -492,7 +513,7 @@ contract FxAtomicSwapTest {
         );
         _confirm();
         require(swap.phase() == FxAtomicSwap.Phase.Incepted, "phase");
-        require(router.activeSwap(address(swap)), "authorization");
+        require(!router.consumedTrade(address(swap), keccak256("1")), "authorization");
         require(quote.balanceOf(PARTY_A) == INITIAL_BALANCE, "quote spent");
         require(quote.balanceOf(PARTY_B) == INITIAL_BALANCE, "quote credited");
         require(quote.allowance(PARTY_A, address(router)) == INITIAL_BALANCE, "quote allowance");
@@ -502,9 +523,9 @@ contract FxAtomicSwapTest {
         (FxAtomicSwap customSwap, ReturnToken customQuote) = _customQuoteSwap();
         customQuote.setBehavior(ReturnToken.Behavior.NoData);
         vm.prank(PARTY_B);
-        customSwap.confirmTrade(PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
+        customSwap.confirmTrade("1", PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
         require(customSwap.phase() == FxAtomicSwap.Phase.Settled, "phase");
-        require(!router.activeSwap(address(customSwap)), "authorization");
+        require(router.consumedTrade(address(customSwap), keccak256("1")), "authorization");
         require(base.balanceOf(PARTY_A) == INITIAL_BALANCE + 100, "base receipt");
         require(customQuote.balanceOf(PARTY_A) == 0, "quote payment");
         require(customQuote.balanceOf(PARTY_B) == 200, "quote receipt");
@@ -525,9 +546,12 @@ contract FxAtomicSwapTest {
                 )
             );
             vm.prank(PARTY_B);
-            customSwap.confirmTrade(PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
+            customSwap.confirmTrade("1", PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
             require(customSwap.phase() == FxAtomicSwap.Phase.Incepted, "phase not restored");
-            require(router.activeSwap(address(customSwap)), "authorization not restored");
+            require(
+                !router.consumedTrade(address(customSwap), keccak256("1")),
+                "authorization not restored"
+            );
             require(base.balanceOf(PARTY_A) == INITIAL_BALANCE, "first transfer survived");
             require(base.balanceOf(PARTY_B) == INITIAL_BALANCE, "base payer balance");
             require(base.allowance(PARTY_B, address(router)) == INITIAL_BALANCE, "base allowance");
@@ -537,7 +561,7 @@ contract FxAtomicSwapTest {
         }
     }
 
-    function testCounterpartyCannotReenterConfirmationDuringTransfer() public {
+    function testCounterpartyCannotReenterAnyTradeActionDuringTransfer() public {
         ReturnToken callbackToken = new ReturnToken();
         ReentrantCounterparty counterparty = new ReentrantCounterparty();
         FxAtomicSwap callbackSwap =
@@ -551,11 +575,284 @@ contract FxAtomicSwapTest {
         );
         counterparty.confirm(callbackSwap, PARTY_A);
         require(counterparty.attempted(), "callback not reached");
-        require(counterparty.reentryError() == FxAtomicSwap.InvalidPhase.selector, "reentry guard");
+        require(counterparty.reentryError() == FxAtomicSwap.ReentrantCall.selector, "reentry guard");
+        require(
+            counterparty.inceptionReentryError() == FxAtomicSwap.ReentrantCall.selector,
+            "inception guard"
+        );
+        require(
+            counterparty.cancellationReentryError() == FxAtomicSwap.ReentrantCall.selector,
+            "cancel guard"
+        );
+        require(
+            keccak256(bytes(callbackSwap.tradeId())) == keccak256("1"),
+            "callback replaced latest trade"
+        );
         require(callbackSwap.phase() == FxAtomicSwap.Phase.Settled, "outer settlement failed");
-        require(!router.activeSwap(address(callbackSwap)), "authorization");
+        require(router.consumedTrade(address(callbackSwap), keccak256("1")), "authorization");
         require(callbackToken.balanceOf(PARTY_A) == 100, "base not transferred exactly once");
         require(quote.balanceOf(address(counterparty)) == 200, "quote not transferred exactly once");
+        vm.prank(address(counterparty));
+        callbackSwap.inceptTrade(
+            address(counterparty), PARTY_A, "next terms", 100, -200, "settlement"
+        );
+        require(
+            callbackSwap.getTrade("2").phase == FxAtomicSwap.Phase.Incepted,
+            "guard did not reopen after settlement"
+        );
+        require(
+            callbackSwap.getTrade("1").phase == FxAtomicSwap.Phase.Settled,
+            "callback corrupted prior trade"
+        );
+    }
+
+    function testReuseAfterSettlementNegotiatesNewAmountsAndRetainsHistory() public {
+        _incept();
+        _confirm();
+        vm.prank(PARTY_A);
+        string memory acceptedId =
+            swap.inceptTrade(PARTY_A, PARTY_B, "new terms", 50, -125, "new data");
+        require(keccak256(bytes(acceptedId)) == keccak256("2"), "wrong returned id");
+        require(keccak256(bytes(swap.tradeId())) == keccak256("2"), "wrong latest id");
+        require(router.registeredSwap(address(swap)), "registration consumed");
+        require(!router.consumedTrade(address(swap), keccak256("2")), "new id consumed");
+        vm.prank(PARTY_B);
+        swap.confirmTrade("2", PARTY_A, PARTY_B, "new terms", 50, -125, "new data");
+
+        require(base.balanceOf(PARTY_A) == INITIAL_BALANCE + 150, "combined base receipt");
+        require(quote.balanceOf(PARTY_A) == INITIAL_BALANCE - 325, "combined quote payment");
+        require(
+            base.allowance(PARTY_B, address(router)) == INITIAL_BALANCE - 150,
+            "base allowance reused"
+        );
+        require(
+            quote.allowance(PARTY_A, address(router)) == INITIAL_BALANCE - 325,
+            "quote allowance reused"
+        );
+        require(router.consumedTrade(address(swap), keccak256("1")), "first id lost");
+        require(router.consumedTrade(address(swap), keccak256("2")), "second id not consumed");
+
+        FxAtomicSwap.Trade memory first = swap.getTrade("1");
+        FxAtomicSwap.Trade memory second = swap.getTrade("2");
+        require(
+            first.phase == FxAtomicSwap.Phase.Settled && second.phase == FxAtomicSwap.Phase.Settled,
+            "history phases"
+        );
+        require(
+            first.inceptor == PARTY_A && first.position == POSITION
+                && first.paymentAmount == PAYMENT,
+            "first amounts overwritten"
+        );
+        require(keccak256(bytes(first.tradeData)) == keccak256("terms"), "first terms overwritten");
+        require(
+            keccak256(bytes(first.initialSettlementData)) == keccak256("settlement"),
+            "first data overwritten"
+        );
+        require(second.position == 50 && second.paymentAmount == -125, "second amounts");
+        require(swap.position() == 50 && swap.paymentAmount() == -125, "latest getters");
+    }
+
+    function testCancellationGeneratesFreshIdAndRejectsStaleActionsForIdenticalTerms() public {
+        string memory firstId = _incept();
+        _cancel();
+        vm.prank(PARTY_A);
+        string memory secondId =
+            swap.inceptTrade(PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
+        require(
+            keccak256(bytes(firstId)) != keccak256(bytes(secondId)), "identical terms reused id"
+        );
+        vm.expectRevert(FxAtomicSwap.InvalidPhase.selector);
+        _confirm();
+        vm.expectRevert(FxAtomicSwap.InvalidPhase.selector);
+        _cancel();
+        require(swap.getTrade("1").phase == FxAtomicSwap.Phase.Canceled, "canceled history changed");
+        require(
+            swap.getTrade("2").phase == FxAtomicSwap.Phase.Incepted,
+            "stale action changed new quote"
+        );
+        _assertOriginalBalancesAndAllowances();
+        vm.prank(PARTY_B);
+        swap.confirmTrade(secondId, PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
+        _assertSettled();
+        require(router.consumedTrade(address(swap), keccak256("2")), "second id not consumed");
+    }
+
+    function testSettledIdCannotConfirmOrCancelIdenticalNewQuote() public {
+        _incept();
+        _confirm();
+        vm.prank(PARTY_A);
+        swap.inceptTrade(PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
+        vm.expectRevert(FxAtomicSwap.InvalidPhase.selector);
+        _confirm();
+        vm.expectRevert(FxAtomicSwap.InvalidPhase.selector);
+        _cancel();
+        require(swap.getTrade("2").phase == FxAtomicSwap.Phase.Incepted, "new quote changed");
+        require(base.balanceOf(PARTY_A) == INITIAL_BALANCE + 100, "stale transfer");
+        vm.prank(PARTY_A);
+        swap.cancelTrade("2", PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
+        require(swap.getTrade("1").phase == FxAtomicSwap.Phase.Settled, "settled history changed");
+    }
+
+    function testNewInceptionCannotOverwritePendingTrade() public {
+        _incept();
+        vm.expectRevert(FxAtomicSwap.InvalidPhase.selector);
+        vm.prank(PARTY_B);
+        swap.inceptTrade(PARTY_B, PARTY_A, "new terms", -50, 150, "new data");
+        _assertOpenAndUnspent();
+        require(keccak256(bytes(swap.tradeId())) == keccak256("1"), "pending id replaced");
+        require(
+            swap.position() == POSITION && swap.paymentAmount() == PAYMENT, "pending terms replaced"
+        );
+        _cancel();
+        require(keccak256(bytes(_incept())) == keccak256("2"), "rejected inception consumed id");
+    }
+
+    function testEmptyAndUnknownIdsCannotReadConfirmOrCancelTrade() public {
+        vm.expectRevert(FxAtomicSwap.UnknownTrade.selector);
+        swap.getTrade("1");
+        vm.expectRevert(FxAtomicSwap.UnknownTrade.selector);
+        swap.getTrade("");
+        _incept();
+        vm.expectRevert(FxAtomicSwap.InvalidPhase.selector);
+        vm.prank(PARTY_B);
+        swap.confirmTrade("", PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
+        vm.expectRevert(FxAtomicSwap.InvalidPhase.selector);
+        vm.prank(PARTY_A);
+        swap.cancelTrade("", PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
+        vm.expectRevert(FxAtomicSwap.InvalidPhase.selector);
+        vm.prank(PARTY_B);
+        swap.confirmTrade("unknown", PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
+        vm.expectRevert(FxAtomicSwap.InvalidPhase.selector);
+        vm.prank(PARTY_A);
+        swap.cancelTrade("unknown", PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
+        _assertOpenAndUnspent();
+    }
+
+    function testGeneratedIdsRemainUniqueAcrossRepeatedIdenticalQuotesAndDecimalBoundary() public {
+        string[12] memory ids;
+        for (uint256 i; i < ids.length; i++) {
+            ids[i] = _incept();
+            require(bytes(ids[i]).length != 0, "empty generated id");
+            for (uint256 j; j < i; j++) {
+                require(keccak256(bytes(ids[j])) != keccak256(bytes(ids[i])), "generated id reused");
+                require(
+                    swap.getTrade(ids[j]).phase == FxAtomicSwap.Phase.Canceled,
+                    "history overwritten"
+                );
+            }
+            vm.prank(PARTY_A);
+            swap.cancelTrade(ids[i], PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
+            require(
+                router.consumedTrade(address(swap), keccak256(bytes(ids[i]))), "id not consumed"
+            );
+        }
+        require(keccak256(bytes(ids[8])) == keccak256("9"), "ninth id");
+        require(keccak256(bytes(ids[9])) == keccak256("10"), "tenth id");
+        require(keccak256(bytes(ids[11])) == keccak256("12"), "twelfth id");
+        _assertOriginalBalancesAndAllowances();
+    }
+
+    function testOperatorApprovalPersistsAcrossTradesAndRevocationStillApplies() public {
+        vm.prank(PARTY_A);
+        swap.setTradeOperator(OUTSIDER, true);
+        vm.prank(OUTSIDER);
+        swap.inceptTrade(PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
+        _confirm();
+        vm.prank(OUTSIDER);
+        swap.inceptTrade(PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
+        vm.prank(PARTY_A);
+        swap.setTradeOperator(OUTSIDER, false);
+        _expectUnauthorized(OUTSIDER, PARTY_A);
+        vm.prank(OUTSIDER);
+        swap.cancelTrade("2", PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
+        vm.prank(PARTY_A);
+        swap.cancelTrade("2", PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
+        _expectUnauthorized(OUTSIDER, PARTY_A);
+        vm.prank(OUTSIDER);
+        swap.inceptTrade(PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
+        require(swap.getTrade("1").phase == FxAtomicSwap.Phase.Settled, "settled trade changed");
+        require(swap.getTrade("2").phase == FxAtomicSwap.Phase.Canceled, "canceled trade changed");
+    }
+
+    function testLaterSettlementFailureRollsBackOnlyThatTradeAndCanRetry() public {
+        _incept();
+        _confirm();
+        vm.prank(PARTY_A);
+        swap.inceptTrade(PARTY_A, PARTY_B, "second", POSITION, PAYMENT, "data");
+        vm.prank(PARTY_A);
+        quote.approve(address(router), 0);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ERC20AtomicSwapSettlementRouter.TransferFromFailed.selector, address(quote)
+            )
+        );
+        vm.prank(PARTY_B);
+        swap.confirmTrade("2", PARTY_A, PARTY_B, "second", POSITION, PAYMENT, "data");
+        require(base.balanceOf(PARTY_A) == INITIAL_BALANCE + 100, "second base transfer survived");
+        require(quote.balanceOf(PARTY_A) == INITIAL_BALANCE - 200, "prior quote payment changed");
+        require(
+            base.allowance(PARTY_B, address(router)) == INITIAL_BALANCE - 100,
+            "second allowance consumed"
+        );
+        require(swap.getTrade("1").phase == FxAtomicSwap.Phase.Settled, "first state changed");
+        require(
+            swap.getTrade("2").phase == FxAtomicSwap.Phase.Incepted, "second state not restored"
+        );
+        require(router.consumedTrade(address(swap), keccak256("1")), "prior consumption changed");
+        require(
+            !router.consumedTrade(address(swap), keccak256("2")), "second consumption not restored"
+        );
+        vm.prank(PARTY_A);
+        quote.approve(address(router), INITIAL_BALANCE);
+        vm.prank(PARTY_B);
+        swap.confirmTrade("2", PARTY_A, PARTY_B, "second", POSITION, PAYMENT, "data");
+        require(base.balanceOf(PARTY_A) == INITIAL_BALANCE + 200, "retry base receipt");
+        require(quote.balanceOf(PARTY_A) == INITIAL_BALANCE - 400, "retry quote payment");
+    }
+
+    function testRouterRejectsEmptyIdsAndDuplicateRegistrationAfterTrade() public {
+        vm.expectRevert(ERC20AtomicSwapSettlementRouter.InvalidTradeId.selector);
+        vm.prank(address(swap));
+        router.cancelAtomicSwap("");
+        vm.expectRevert(ERC20AtomicSwapSettlementRouter.InvalidTradeId.selector);
+        vm.prank(address(swap));
+        router.settleAtomicSwap(
+            "", _token(base), _token(quote), PARTY_A, PARTY_B, POSITION, PAYMENT
+        );
+        _incept();
+        _cancel();
+        vm.expectRevert(ERC20AtomicSwapSettlementRouter.InvalidSwap.selector);
+        vm.prank(address(factory));
+        router.registerSwap(address(swap));
+        require(router.registeredSwap(address(swap)), "registration lost");
+        require(router.consumedTrade(address(swap), keccak256("1")), "tombstone reset");
+    }
+
+    function testFuzzReuseCanChangeInceptorAndDirection(bool bIncepts, bool receivesBase) public {
+        _incept();
+        _confirm();
+        address initiator = bIncepts ? PARTY_B : PARTY_A;
+        address confirmer = bIncepts ? PARTY_A : PARTY_B;
+        int256 secondPosition = receivesBase ? int256(40) : int256(-40);
+        int256 secondPayment = receivesBase ? int256(-75) : int256(75);
+        uint256 baseBefore = base.balanceOf(initiator);
+        uint256 quoteBefore = quote.balanceOf(initiator);
+        vm.prank(initiator);
+        swap.inceptTrade(initiator, confirmer, "second", secondPosition, secondPayment, "data");
+        vm.prank(confirmer);
+        swap.confirmTrade(
+            "2", initiator, confirmer, "second", secondPosition, secondPayment, "data"
+        );
+        require(
+            base.balanceOf(initiator) == (receivesBase ? baseBefore + 40 : baseBefore - 40),
+            "second base direction"
+        );
+        require(
+            quote.balanceOf(initiator) == (receivesBase ? quoteBefore - 75 : quoteBefore + 75),
+            "second quote direction"
+        );
+        require(swap.inceptor() == initiator, "second inceptor");
+        require(swap.getTrade("1").inceptor == PARTY_A, "first inceptor changed");
     }
 
     function testUnsupportedTerminationOperationsRevert() public {
@@ -605,19 +902,19 @@ contract FxAtomicSwapTest {
         return IERC20RouterToken(address(token));
     }
 
-    function _incept() private {
+    function _incept() private returns (string memory) {
         vm.prank(PARTY_A);
-        swap.inceptTrade(PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
+        return swap.inceptTrade(PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
     }
 
     function _confirm() private {
         vm.prank(PARTY_B);
-        swap.confirmTrade(PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
+        swap.confirmTrade("1", PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
     }
 
     function _cancel() private {
         vm.prank(PARTY_A);
-        swap.cancelTrade(PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
+        swap.cancelTrade("1", PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
     }
 
     function _assertTerminalCallsRevert() private {
@@ -625,14 +922,14 @@ contract FxAtomicSwapTest {
         _confirm();
         vm.expectRevert(FxAtomicSwap.InvalidPhase.selector);
         _cancel();
-        vm.expectRevert(FxAtomicSwap.InvalidPhase.selector);
-        _incept();
-        vm.expectRevert(ERC20AtomicSwapSettlementRouter.InactiveSwap.selector);
+        vm.expectRevert(ERC20AtomicSwapSettlementRouter.TradeAlreadyConsumed.selector);
         vm.prank(address(swap));
-        router.settleAtomicSwap(_token(base), _token(quote), PARTY_A, PARTY_B, POSITION, PAYMENT);
-        vm.expectRevert(ERC20AtomicSwapSettlementRouter.InactiveSwap.selector);
+        router.settleAtomicSwap(
+            "1", _token(base), _token(quote), PARTY_A, PARTY_B, POSITION, PAYMENT
+        );
+        vm.expectRevert(ERC20AtomicSwapSettlementRouter.TradeAlreadyConsumed.selector);
         vm.prank(address(swap));
-        router.cancelAtomicSwap();
+        router.cancelAtomicSwap("1");
     }
 
     function _assertOriginalBalancesAndAllowances() private view {
@@ -648,13 +945,13 @@ contract FxAtomicSwapTest {
 
     function _assertOpenAndUnspent() private view {
         require(swap.phase() == FxAtomicSwap.Phase.Incepted, "phase");
-        require(router.activeSwap(address(swap)), "authorization");
+        require(!router.consumedTrade(address(swap), keccak256("1")), "authorization");
         _assertOriginalBalancesAndAllowances();
     }
 
     function _assertSettled() private view {
         require(swap.phase() == FxAtomicSwap.Phase.Settled, "phase");
-        require(!router.activeSwap(address(swap)), "authorization");
+        require(router.consumedTrade(address(swap), keccak256("1")), "authorization");
         require(base.balanceOf(PARTY_A) == INITIAL_BALANCE + 100, "base A balance");
         require(base.balanceOf(PARTY_B) == INITIAL_BALANCE - 100, "base B balance");
         require(quote.balanceOf(PARTY_A) == INITIAL_BALANCE - 200, "quote A balance");

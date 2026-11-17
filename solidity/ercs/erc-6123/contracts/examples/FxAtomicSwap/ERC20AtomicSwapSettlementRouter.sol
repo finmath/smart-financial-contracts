@@ -8,11 +8,12 @@ interface IERC20RouterToken {
 
 /// @notice Synchronous settlement and cancellation interface called by factory-created FX swaps.
 interface IAtomicSwapSettlement {
-    /// @notice Revokes the calling swap's unused settlement authorization.
-    function cancelAtomicSwap() external;
+    /// @notice Consumes one trade's unused authorization on the calling swap.
+    function cancelAtomicSwap(string calldata tradeId) external;
 
     /// @notice Completes both token legs before returning, or reverts the entire settlement.
     function settleAtomicSwap(
+        string calldata tradeId,
         IERC20RouterToken baseToken,
         IERC20RouterToken quoteToken,
         address inceptor,
@@ -25,9 +26,10 @@ interface IAtomicSwapSettlement {
 /**
  * @title ERC-20 Atomic Swap Settlement Router
  * @notice Common ERC-20 spender for all swaps created by one factory.
- * @dev Token holders approve this router once. The router stores only whether a
- *      factory-created swap still has an unused, uncanceled settlement authorization. The
- *      immutable swap itself is the source of its tokens, parties, and amounts.
+ * @dev Token holders approve this router once. Factory registration persists across
+ *      trades, while each (swap, trade ID) authorization is consumed at most once.
+ *      The trusted swap enforces unique inception IDs, consent and matching terms;
+ *      its fixed configuration is the source of the tokens and eligible parties.
  *      Supported tokens transfer exactly the requested amount on success.
  *      Fee-on-transfer and rebasing tokens are outside this example's scope;
  *      the router does not verify balance deltas.
@@ -36,11 +38,15 @@ contract ERC20AtomicSwapSettlementRouter is IAtomicSwapSettlement {
     error InvalidFactory();
     error InvalidSwap();
     error NotFactory();
-    error InactiveSwap();
+    error UnregisteredSwap();
+    error InvalidTradeId();
+    error TradeAlreadyConsumed();
     error TransferFromFailed(address token);
 
     address public immutable factory;
-    mapping(address swap => bool active) public activeSwap;
+    mapping(address swap => bool registered) public registeredSwap;
+    /// @notice True after settlement or cancellation; ID key is keccak256(bytes(tradeId)).
+    mapping(address swap => mapping(bytes32 idHash => bool consumed)) public consumedTrade;
 
     /**
      * @notice Creates a settlement router controlled by one immutable factory.
@@ -52,41 +58,40 @@ contract ERC20AtomicSwapSettlementRouter is IAtomicSwapSettlement {
     }
 
     /**
-     * @notice Gives one factory-created swap a single settlement authorization.
+     * @notice Permanently registers one factory-created reusable swap.
      * @dev The factory deploys the exact trusted swap implementation and calls this method in the same transaction.
      * @param swap Newly deployed swap contract.
      */
     function registerSwap(address swap) external {
         if (msg.sender != factory) revert NotFactory();
-        if (swap.code.length == 0 || activeSwap[swap]) revert InvalidSwap();
+        if (swap.code.length == 0 || registeredSwap[swap]) revert InvalidSwap();
 
-        activeSwap[swap] = true;
+        registeredSwap[swap] = true;
     }
 
     /**
-     * @notice Revokes the calling swap's settlement authorization without moving tokens.
-     * @dev Only a registered, active swap can revoke its own authorization. The
-     *      trusted swap checks the inceptor and matching terms before calling.
-     *      ERC-20 allowances remain available for other swaps using this router.
+     * @notice Consumes an identified trade's authorization without moving tokens.
+     * @dev Only a registered swap can cancel its own trade. The trusted swap checks
+     *      the inceptor, pending trade ID and matching terms before calling.
+     *      Registration and ERC-20 allowances remain available for later trades.
      */
-    function cancelAtomicSwap() external override {
-        if (!activeSwap[msg.sender]) revert InactiveSwap();
-
-        activeSwap[msg.sender] = false;
+    function cancelAtomicSwap(string calldata tradeId) external override {
+        _consumeTrade(tradeId);
     }
 
     /**
-     * @notice Transfers both token legs for one authorized single-use swap.
+     * @notice Transfers both token legs for one identified trade on a registered swap.
      * @dev `msg.sender` must be a swap registered by the immutable factory. Its
-     *      authorization is consumed before either external token call. This is
-     *      the per-swap reentrancy guard: a callback cannot reuse the same swap;
-     *      independent swaps do not need a global lock. Any failure reverts both
-     *      transfers and restores the authorization atomically.
+     *      trade authorization is consumed before either external token call. The
+     *      trusted swap also prevents re-entry across its trades during settlement.
+     *      Any failure reverts both transfers and restores that trade's authorization
+     *      atomically; registration is never consumed.
      *
      *      Signed amounts are viewed from `inceptor`: positive means receive the
      *      token and negative means deliver it. The trusted swap has already
      *      validated that both legs are nonzero, opposite in sign, and not
      *      `type(int256).min`.
+     * @param tradeId Nonempty lifetime-unique trade identifier within the calling swap.
      * @param baseToken ERC-20 token represented by `position`.
      * @param quoteToken ERC-20 token represented by `paymentAmount`.
      * @param inceptor Party from whose perspective both amounts are signed.
@@ -95,6 +100,7 @@ contract ERC20AtomicSwapSettlementRouter is IAtomicSwapSettlement {
      * @param paymentAmount Signed quote-token amount.
      */
     function settleAtomicSwap(
+        string calldata tradeId,
         IERC20RouterToken baseToken,
         IERC20RouterToken quoteToken,
         address inceptor,
@@ -102,13 +108,19 @@ contract ERC20AtomicSwapSettlementRouter is IAtomicSwapSettlement {
         int256 position,
         int256 paymentAmount
     ) external override {
-        if (!activeSwap[msg.sender]) revert InactiveSwap();
-
-        // Consume the authorization before calling either ERC-20 contract.
-        activeSwap[msg.sender] = false;
+        // Consume this ID before calling either ERC-20 contract.
+        _consumeTrade(tradeId);
 
         _move(baseToken, inceptor, counterparty, position);
         _move(quoteToken, inceptor, counterparty, paymentAmount);
+    }
+
+    function _consumeTrade(string calldata tradeId) private {
+        if (!registeredSwap[msg.sender]) revert UnregisteredSwap();
+        if (bytes(tradeId).length == 0) revert InvalidTradeId();
+        bytes32 idHash = keccak256(bytes(tradeId));
+        if (consumedTrade[msg.sender][idHash]) revert TradeAlreadyConsumed();
+        consumedTrade[msg.sender][idHash] = true;
     }
 
     /**
@@ -142,18 +154,13 @@ contract ERC20AtomicSwapSettlementRouter is IAtomicSwapSettlement {
      * @param to Token recipient.
      * @param value Amount in the token's smallest unit.
      */
-    function _safeTransferFrom(
-        IERC20RouterToken token,
-        address from,
-        address to,
-        uint256 value
-    ) private {
-        (bool success, bytes memory data) = address(token).call(
-            abi.encodeCall(IERC20RouterToken.transferFrom, (from, to, value))
-        );
+    function _safeTransferFrom(IERC20RouterToken token, address from, address to, uint256 value)
+        private
+    {
+        (bool success, bytes memory data) =
+            address(token).call(abi.encodeCall(IERC20RouterToken.transferFrom, (from, to, value)));
 
-        if (!success || (data.length != 0 && (data.length < 32 || !abi.decode(data, (bool))))
-        ) {
+        if (!success || (data.length != 0 && (data.length < 32 || !abi.decode(data, (bool))))) {
             revert TransferFromFailed(address(token));
         }
     }

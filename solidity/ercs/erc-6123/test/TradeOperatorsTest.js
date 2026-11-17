@@ -24,7 +24,7 @@ describe("ERC-6123 explicit parties and trade operators", () => {
   async function settle(ctx, position = 1) {
     const args = [ctx.a.address, ctx.b.address, terms, position, 0, market];
     await ctx.sdc.connect(ctx.a).inceptTrade(...args);
-    await ctx.sdc.connect(ctx.b).confirmTrade(...args);
+    await ctx.sdc.connect(ctx.b).confirmTrade(await ctx.sdc.getTradeID(), ...args);
     return ctx.sdc.getTradeID();
   }
 
@@ -42,15 +42,15 @@ describe("ERC-6123 explicit parties and trade operators", () => {
           const tradeId = await sdc.getTradeID();
           await expect(inception).to.emit(sdc, "TradeIncepted")
             .withArgs(inceptor.address, counterparty.address, tradeId, terms, position, payment, market);
-          await expect(sdc.connect(confirmingOperator).confirmTrade(...args))
+          await expect(sdc.connect(confirmingOperator).confirmTrade(await sdc.getTradeID(), ...args))
             .to.emit(sdc, "TradeConfirmed").withArgs(counterparty.address, tradeId);
           expect(await token.balanceOf(inceptor.address)).to.equal(initialBalance + payment);
           expect(await token.balanceOf(counterparty.address)).to.equal(initialBalance - payment);
           expect(await token.balanceOf(initiatingOperator.address)).to.equal(0);
           expect(await token.balanceOf(confirmingOperator.address)).to.equal(0);
           expect(await sdc.getReceivingParty()).to.equal(position === 1 ? inceptor.address : counterparty.address);
-          await expect(sdc.connect(confirmingOperator).confirmTrade(...args)).to.be.reverted;
-          await expect(sdc.connect(initiatingOperator).cancelTrade(...args)).to.be.reverted;
+          await expect(sdc.connect(confirmingOperator).confirmTrade(await sdc.getTradeID(), ...args)).to.be.reverted;
+          await expect(sdc.connect(initiatingOperator).cancelTrade(await sdc.getTradeID(), ...args)).to.be.reverted;
         }
       }
     }
@@ -67,15 +67,15 @@ describe("ERC-6123 explicit parties and trade operators", () => {
     await expect(sdc.connect(a).setTradeOperator(operatorA.address, true))
       .to.emit(sdc, "TradeOperatorApproval").withArgs(a.address, operatorA.address, true);
     await sdc.connect(operatorA).inceptTrade(...args);
-    await expect(sdc.connect(operatorA).confirmTrade(...args)).to.be.reverted;
-    await expect(sdc.connect(operatorB).confirmTrade(...args)).to.be.reverted;
-    await expect(sdc.connect(a).confirmTrade(...args)).to.be.reverted;
+    await expect(sdc.connect(operatorA).confirmTrade(await sdc.getTradeID(), ...args)).to.be.reverted;
+    await expect(sdc.connect(operatorB).confirmTrade(await sdc.getTradeID(), ...args)).to.be.reverted;
+    await expect(sdc.connect(a).confirmTrade(await sdc.getTradeID(), ...args)).to.be.reverted;
     await sdc.connect(b).setTradeOperator(operatorB.address, true);
     await sdc.connect(b).setTradeOperator(operatorB.address, false);
     expect(await sdc.isTradeOperator(b.address, operatorB.address)).to.equal(false);
-    await expect(sdc.connect(operatorB).confirmTrade(...args)).to.be.reverted;
+    await expect(sdc.connect(operatorB).confirmTrade(await sdc.getTradeID(), ...args)).to.be.reverted;
     expect(await token.balanceOf(a.address)).to.equal(initialBalance);
-    await sdc.connect(b).confirmTrade(...args);
+    await sdc.connect(b).confirmTrade(await sdc.getTradeID(), ...args);
     expect(await token.balanceOf(a.address)).to.equal(initialBalance + 100);
   });
 
@@ -86,14 +86,15 @@ describe("ERC-6123 explicit parties and trade operators", () => {
     const args = [a.address, b.address, terms, 1, 100, market];
     await sdc.connect(operatorA).inceptTrade(...args);
     const invalid = [
-      [outsider.address, b.address, terms, 1, 100, market],
-      [a.address, outsider.address, terms, 1, 100, market],
-      [b.address, a.address, terms, 1, 100, market],
-      [a.address, b.address, "changed terms", 1, 100, market],
-      [a.address, b.address, terms, -1, 100, market],
-      [a.address, b.address, terms, 1, -100, market],
-      [a.address, b.address, terms, 1, 100, "changed market"],
-      [ethers.constants.AddressZero, b.address, terms, 1, 100, market],
+      ["different-trade", a.address, b.address, terms, 1, 100, market],
+      [await sdc.getTradeID(), outsider.address, b.address, terms, 1, 100, market],
+      [await sdc.getTradeID(), a.address, outsider.address, terms, 1, 100, market],
+      [await sdc.getTradeID(), b.address, a.address, terms, 1, 100, market],
+      [await sdc.getTradeID(), a.address, b.address, "changed terms", 1, 100, market],
+      [await sdc.getTradeID(), a.address, b.address, terms, -1, 100, market],
+      [await sdc.getTradeID(), a.address, b.address, terms, 1, -100, market],
+      [await sdc.getTradeID(), a.address, b.address, terms, 1, 100, "changed market"],
+      [await sdc.getTradeID(), ethers.constants.AddressZero, b.address, terms, 1, 100, market],
     ];
     for (const mismatch of invalid) {
       await expect(sdc.connect(operatorB).confirmTrade(...mismatch)).to.be.reverted;
@@ -101,7 +102,7 @@ describe("ERC-6123 explicit parties and trade operators", () => {
     }
     expect(await sdc.getTradeState()).to.equal(1);
     expect(await token.balanceOf(a.address)).to.equal(initialBalance);
-    await sdc.connect(operatorB).confirmTrade(...args);
+    await sdc.connect(operatorB).confirmTrade(await sdc.getTradeID(), ...args);
     expect(await sdc.getTradeState()).to.equal(5);
   });
 
@@ -112,14 +113,14 @@ describe("ERC-6123 explicit parties and trade operators", () => {
     const args = [a.address, b.address, terms, 1, 100, market];
     await sdc.connect(operatorA).inceptTrade(...args);
     const tradeId = await sdc.getTradeID();
-    await expect(sdc.connect(operatorB).cancelTrade(...args)).to.be.reverted;
+    await expect(sdc.connect(operatorB).cancelTrade(await sdc.getTradeID(), ...args)).to.be.reverted;
     await sdc.connect(a).setTradeOperator(operatorA.address, false);
-    await expect(sdc.connect(operatorA).cancelTrade(...args)).to.be.reverted;
+    await expect(sdc.connect(operatorA).cancelTrade(await sdc.getTradeID(), ...args)).to.be.reverted;
     await sdc.connect(a).setTradeOperator(operatorA.address, true);
-    await expect(sdc.connect(operatorA).cancelTrade(...args))
+    await expect(sdc.connect(operatorA).cancelTrade(await sdc.getTradeID(), ...args))
       .to.emit(sdc, "TradeCanceled").withArgs(a.address, tradeId);
-    await expect(sdc.connect(operatorB).confirmTrade(...args)).to.be.reverted;
-    await expect(sdc.connect(operatorA).cancelTrade(...args)).to.be.reverted;
+    await expect(sdc.connect(operatorB).confirmTrade(await sdc.getTradeID(), ...args)).to.be.reverted;
+    await expect(sdc.connect(operatorA).cancelTrade(await sdc.getTradeID(), ...args)).to.be.reverted;
     expect(await token.balanceOf(a.address)).to.equal(initialBalance);
     expect(await token.balanceOf(b.address)).to.equal(initialBalance);
   });
@@ -222,7 +223,7 @@ describe("ERC-6123 explicit parties and trade operators", () => {
       data: setter.encodeFunctionData("setTradeId", ["replacement"]),
     })).to.be.reverted;
     expect(await sdc.getTradeID()).to.equal(tradeId);
-    await sdc.connect(b).confirmTrade(...args);
+    await sdc.connect(b).confirmTrade(await sdc.getTradeID(), ...args);
     expect(await sdc.getTradeID()).to.equal(tradeId);
   });
 
@@ -241,4 +242,58 @@ describe("ERC-6123 explicit parties and trade operators", () => {
       .to.be.revertedWith("Payment amount cannot be int256 minimum");
     expect(await sdc.getTradeState()).to.equal(5);
   });
+
+  it("generates fresh IDs for identical replacement quotes and rejects stale confirmations and cancellations", async () => {
+    const ctx = await fixture();
+    const { a, b, operatorA, operatorB, sdc, token } = ctx;
+    await approveOperators(ctx);
+    const args = [a.address, b.address, terms, 1, 100, market];
+    // Simulating the return value does not consume the generated identifier.
+    expect(await sdc.connect(operatorA).callStatic.inceptTrade(...args)).to.equal("1");
+    expect(await sdc.connect(operatorA).callStatic.inceptTrade(...args)).to.equal("1");
+    const inception = await sdc.connect(operatorA).inceptTrade(...args);
+    const firstId = await sdc.getTradeID();
+    expect(firstId).to.equal("1");
+    await expect(inception).to.emit(sdc, "TradeIncepted")
+      .withArgs(a.address, b.address, firstId, terms, 1, 100, market);
+    await expect(sdc.connect(operatorA).cancelTrade(firstId, ...args))
+      .to.emit(sdc, "TradeCanceled").withArgs(a.address, firstId);
+
+    expect(await sdc.connect(operatorA).callStatic.inceptTrade(...args)).to.equal("2");
+    await sdc.connect(operatorA).inceptTrade(...args);
+    const secondId = await sdc.getTradeID();
+    expect(secondId).to.equal("2");
+    await expect(sdc.connect(operatorB).confirmTrade(firstId, ...args)).to.be.revertedWith("Trade ID mismatch");
+    await expect(sdc.connect(operatorA).cancelTrade(firstId, ...args)).to.be.revertedWith("Trade ID mismatch");
+    expect(await sdc.getTradeState()).to.equal(1);
+    expect(await token.balanceOf(a.address)).to.equal(initialBalance);
+    await expect(sdc.connect(operatorB).confirmTrade(secondId, ...args))
+      .to.emit(sdc, "TradeConfirmed").withArgs(b.address, secondId);
+    expect(await token.balanceOf(a.address)).to.equal(initialBalance + 100);
+    expect(await token.balanceOf(b.address)).to.equal(initialBalance - 100);
+    await sdc.connect(operatorA).requestTradeTermination(secondId, a.address, 0, "close");
+    await sdc.connect(operatorB).confirmTradeTermination(secondId, a.address, 0, "close");
+    expect(await sdc.getTradeState()).to.equal(7);
+    await expect(sdc.connect(operatorA).inceptTrade(...args)).to.be.reverted;
+    await expect(sdc.connect(operatorB).confirmTrade(secondId, ...args)).to.be.reverted;
+  });
+
+  it("retains the ID sequence across cancellations and rejects empty continuation IDs", async () => {
+    const { a, b, outsider, sdc } = await fixture();
+    for (let sequence = 1; sequence <= 12; ++sequence) {
+      const [inceptor, counterparty] = sequence % 2 === 0 ? [b, a] : [a, b];
+      const args = [inceptor.address, counterparty.address, terms, 1, 0, market];
+      await expect(sdc.connect(outsider).inceptTrade(...args)).to.be.reverted;
+      await expect(sdc.connect(inceptor).inceptTrade(inceptor.address, counterparty.address, terms, 0, 0, market))
+        .to.be.revertedWith("Position can only be +1 or -1");
+      await sdc.connect(inceptor).inceptTrade(...args);
+      const tradeId = await sdc.getTradeID();
+      expect(tradeId).to.equal(String(sequence));
+      await expect(sdc.connect(counterparty).confirmTrade("", ...args)).to.be.revertedWith("Trade ID mismatch");
+      await expect(sdc.connect(inceptor).cancelTrade("", ...args)).to.be.revertedWith("Trade ID mismatch");
+      await sdc.connect(inceptor).cancelTrade(tradeId, ...args);
+    }
+    expect(await sdc.getTradeState()).to.equal(0);
+  });
+
 });

@@ -1,6 +1,6 @@
 @startuml
 
-title FX Atomic Swap via a Shared ERC-20 Atomic Swap Settlement Router\nExample: Party A receives BASE_QTY base tokens and pays QUOTE_QTY quote tokens
+title Reusable Bilateral FX Atomic Swap via a Shared ERC-20 Settlement Router\nEach example trade: Party A receives BASE_QTY base tokens and pays QUOTE_QTY quote tokens
 
 autonumber
 hide footbox
@@ -14,7 +14,7 @@ actor "Party B\n(confirmer)" as PartyB
 participant "ProductDefinitionRegistry\n(proposed route)" as Registry #FFF2CC
 participant "Factory\nstandalone: FxAtomicSwapFactory\nproposed: FxAtomicSwapProductFactory" as Factory
 participant "ERC20AtomicSwapSettlementRouter\n(common spender)" as Router
-participant "FxAtomicSwap\n(single-use swap)" as Swap
+participant "FxAtomicSwap\n(reusable bilateral instance)" as Swap
 participant "Base ERC-20" as BaseToken
 participant "Quote ERC-20" as QuoteToken
 
@@ -73,10 +73,11 @@ BaseToken --> PartyB -- : true
 note over PartyA, QuoteToken
 For this sign configuration, Party A authorizes quote-token spending
 and Party B authorizes base-token spending. Any remaining allowance can be used
-by other swaps registered with the same router.
+by later trades on this instance or other swaps registered with the same router.
+Replenish allowances before later settlements when necessary.
 end note
 
-== Creation and one-time authorization ==
+== Create and register one reusable instance ==
 
 alt Standalone creation (implemented)
 PartyA -> Factory : createSwap(BaseToken, QuoteToken, PartyA, PartyB)
@@ -93,7 +94,7 @@ Factory -> Swap ++ : new FxAtomicSwap(\n  BaseToken, QuoteToken, PartyA, PartyB,
 Swap -> Swap : store immutable tokens, parties, and Router\nphase = Created
 Swap --> Factory -- : swap address
 Factory -> Router ++ : registerSwap(Swap)
-Router -> Router : require msg.sender == Factory\nrequire Swap has code and is not active\nactiveSwap[Swap] = true
+Router -> Router : require msg.sender == Factory\nrequire Swap has code and is not registered\nregisteredSwap[Swap] = true
 Router --> Factory -- : registered
 
 alt Standalone return (implemented)
@@ -107,7 +108,9 @@ Factory --> Registry -- : true
 Registry -> Registry : verify deployed code and provenance\nrecord registered product; emit ProductIssued
 Registry --> RegistryOwner : Swap address
 note over RegistryOwner, Swap #FFF2CC
-Issuance only creates the swap. It does not authorize a trade or move tokens.
+Issuance creates and registers the reusable instance once.
+Later trades use that same instance directly, without registry issuance.
+Issuance does not authorize a trade or move tokens.
 The no-request route does not automatically check client eligibility.
 The existing party/operator agreement below remains required.
 The current registry does not require IProduct metadata getters on the swap.
@@ -115,8 +118,9 @@ end note
 end
 
 note over Swap, Router
-The router stores only one active flag per swap.
-The swap is the single source of tokens, parties, and terms.
+The router permanently registers the instance and consumes trade IDs individually.
+The swap fixes tokens, parties and router; amounts and terms belong to each trade.
+Either fixed party may incept. The example below consistently uses Party A.
 end note
 
 note over PartyA, Swap
@@ -125,43 +129,55 @@ A participant may call setTradeOperator(operator, true) on this swap.
 A's approved operator may submit inception or cancellation; B's may confirm.
 Caller identity does not change either participant or the amount perspective.
 Approval is checked at execution and may be revoked with false.
+Operator approval also applies to future trades on this instance until revoked.
 ERC-20 allowances alone do not authorize trade actions.
 end note
 
-== ERC-6123 inception by Party A ==
+loop Successive trades on this instance: one pending quote at a time
+
+== ERC-6123 inception generates a fresh trade ID ==
 
 PartyA -> Swap ++ : inceptTrade(\n  PartyA, PartyB, tradeData,\n  +BASE_QTY, -QUOTE_QTY, settlementData\n)
-Swap -> Swap : require phase == Created\nvalidate explicit fixed parties\nauthorize caller for PartyA\nvalidate nonzero, opposite-sign legs; reject int256 minimum
-Swap -> Swap : inceptor = PartyA\nposition = +BASE_QTY\npaymentAmount = -QUOTE_QTY\nstore textual terms\nphase = Incepted
-Swap -> Swap : emit TradeIncepted(PartyA, PartyB, "1", tradeData,\n  +BASE_QTY, -QUOTE_QTY, settlementData)
-Swap --> PartyA -- : tradeId = "1"
+Swap -> Swap : require no pending quote\nvalidate explicit fixed parties\nauthorize caller for PartyA\nvalidate nonzero, opposite-sign legs; reject int256 minimum
+Swap -> Swap : generate next monotonic decimal tradeId\n("1", "2", ...; never reused)\nstore record under tradeId:\n  inceptor = PartyA, position = +BASE_QTY\n  paymentAmount = -QUOTE_QTY, textual terms\n  phase = Incepted\nset latest tradeId
+Swap -> Swap : emit TradeIncepted(PartyA, PartyB, tradeId, tradeData,\n  +BASE_QTY, -QUOTE_QTY, settlementData)
+Swap --> PartyA -- : generated tradeId (return value)
+
+note over PartyA, Swap
+On-chain clients use the returned ID. Off-chain clients read TradeIncepted
+from their transaction receipt; do not predict an ID before submission.
+The local demo reads tradeId() after successful inception with no intervening trade.
+Confirmation and cancellation include the actual generated ID.
+end note
 
 note right of Swap
 Sign convention from the inceptor's perspective:
   position > 0       => receive base
   paymentAmount < 0  => deliver quote
+The rate follows from the two exact amounts and token decimals.
+Each trade can use different amounts and textual terms.
 end note
 
 == Resolve the quote through ERC-6123 confirmation or cancellation ==
 
 alt Party B confirms successfully before cancellation
 
-PartyB -> Swap ++ : confirmTrade(\n  PartyA, PartyB, same tradeData,\n  +BASE_QTY, -QUOTE_QTY, same settlementData\n)
-Swap -> Swap : require phase == Incepted\nmatch both stored parties\nauthorize caller for PartyB\nmatch original signed amounts and terms
-Swap -> Swap : phase = Settled\n(checks-effects-interactions)
-Swap -> Router ++ : settleAtomicSwap(\n  BaseToken, QuoteToken, PartyA, PartyB,\n  +BASE_QTY, -QUOTE_QTY\n)
+PartyB -> Swap ++ : confirmTrade(\n  same tradeId, PartyA, PartyB, same tradeData,\n  +BASE_QTY, -QUOTE_QTY, same settlementData\n)
+Swap -> Swap : match pending tradeId; require phase == Incepted\nmatch both stored parties\nauthorize caller for PartyB\nmatch original signed amounts and terms
+Swap -> Swap : trade phase = Settled\n(checks-effects-interactions)
+Swap -> Router ++ : settleAtomicSwap(\n  tradeId, BaseToken, QuoteToken, PartyA, PartyB,\n  +BASE_QTY, -QUOTE_QTY\n)
 
 note over Swap, Router
 Inside the router, msg.sender = Swap.
-The one-time flag authenticates the factory-created caller.
+Permanent registration authenticates the factory-created caller.
 end note
 
-Router -> Router : require activeSwap[Swap]\nactiveSwap[Swap] = false
+Router -> Router : require registeredSwap[Swap]\nrequire nonempty tradeId\nidHash = keccak256(bytes(tradeId))\nrequire !consumedTrade[Swap][idHash]\nconsumedTrade[Swap][idHash] = true
 
-note right of Router
-Consuming the flag before token calls prevents the same swap
-from settling twice, including through a callback.
-A global reentrancy lock is unnecessary for independent swaps.
+note over Router, Swap
+Consume this ID before external token calls to prevent duplicate settlement.
+The swap guards inception, confirmation and cancellation against reentrancy,
+including attempts to start another trade during the current settlement.
 end note
 
 note over Router, QuoteToken
@@ -191,26 +207,26 @@ group Quote leg: Party A delivers quote to Party B
 end
 
 Router --> Swap -- : settlement completed
-Swap -> Swap : emit TradeConfirmed(PartyB, "1")\nemit TradeTerminated("1", "atomic settlement completed")
+Swap -> Swap : emit TradeConfirmed(PartyB, tradeId)\nemit TradeTerminated(tradeId, "atomic settlement completed")
 Swap --> PartyB -- : confirmation transaction succeeds
 
 note over PartyA, QuoteToken
 Settlement occurs in one transaction submitted by Party B or its approved operator.
 If validation or either token call fails, all effects of that transaction are undone.
-For the open quote shown here, phase remains Incepted and activeSwap[Swap] = true:
+For the open quote shown here, phase remains Incepted and consumedTrade = false:
 Party B may retry, or Party A may cancel, directly or through their approved operators.
-A rejected call after settlement or cancellation preserves that terminal state.
+A rejected call for a closed ID preserves its terminal state and any newer trade.
 end note
 
 else Party A cancels before successful confirmation
 
-PartyA -> Swap ++ : cancelTrade(\n  PartyA, PartyB, same tradeData,\n  +BASE_QTY, -QUOTE_QTY, same settlementData\n)
-Swap -> Swap : require phase == Incepted\nmatch both stored parties\nauthorize caller for PartyA\nmatch all original terms
-Swap -> Swap : phase = Canceled\n(checks-effects-interactions)
-Swap -> Router ++ : cancelAtomicSwap()
-Router -> Router : require activeSwap[Swap]\nactiveSwap[Swap] = false
-Router --> Swap -- : authorization revoked
-Swap -> Swap : emit TradeCanceled(PartyA, "1")
+PartyA -> Swap ++ : cancelTrade(\n  same tradeId, PartyA, PartyB, same tradeData,\n  +BASE_QTY, -QUOTE_QTY, same settlementData\n)
+Swap -> Swap : match pending tradeId; require phase == Incepted\nmatch both stored parties\nauthorize caller for PartyA\nmatch all original terms
+Swap -> Swap : trade phase = Canceled\n(checks-effects-interactions)
+Swap -> Router ++ : cancelAtomicSwap(tradeId)
+Router -> Router : require registeredSwap[Swap]\nrequire nonempty tradeId\nidHash = keccak256(bytes(tradeId))\nrequire !consumedTrade[Swap][idHash]\nconsumedTrade[Swap][idHash] = true
+Router --> Swap -- : this trade ID consumed
+Swap -> Swap : emit TradeCanceled(PartyA, tradeId)
 Swap --> PartyA -- : cancellation transaction succeeds
 
 note over PartyA, QuoteToken
@@ -220,11 +236,20 @@ end note
 
 end
 
+note over PartyA, Swap
+This trade ID is permanently closed; another inception generates a fresh ID.
+No factory call, router re-registration or registry issuance is needed.
+Latest getters and the ERC-8100 XML view follow the latest trade.
+getTrade(id) retains each trade's terms and phase; closed records remain unchanged.
+end note
+
+end
+
 note over PartyA, QuoteToken
 An open quote is withdrawn through cancelTrade by the inceptor or its approved operator.
 There is no clock-based expiry; transaction order determines which terminal action succeeds.
-Settled and Canceled are final. A new quote needs a new factory-created swap;
-the shared router and any remaining allowances can be reused.
+Settled and Canceled are final for one ID, while the instance remains reusable.
+Router registration persists; per-ID consumption flags and stored records are never reset.
 The request/confirm/cancelTradeTermination methods are unsupported and revert.
 end note
 

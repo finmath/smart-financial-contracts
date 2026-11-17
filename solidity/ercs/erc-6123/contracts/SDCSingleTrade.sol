@@ -3,9 +3,9 @@ pragma solidity >=0.7.0;
 
 import "./ISDC.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "@openzeppelin/contracts/utils/Strings.sol";
 import "./ERC20Settlement.sol";
 import "./TradeAuthorizable.sol";
+import "./TradeIdGenerator.sol";
 
 
 
@@ -20,7 +20,7 @@ import "./TradeAuthorizable.sol";
  * - upon termination all remaining 'locked' amounts will be transferred back to the counterparties
 */
 
-abstract contract SDCSingleTrade is ISDCTrade, TradeAuthorizable {
+abstract contract SDCSingleTrade is ISDCTrade, TradeAuthorizable, TradeIdGenerator {
     /*
      * Trade States
      */
@@ -132,7 +132,8 @@ abstract contract SDCSingleTrade is ISDCTrade, TradeAuthorizable {
 
     /**
      * @notice Stores the inception from the named inceptor's perspective.
-     * @dev The caller must be the inceptor or its approved trade operator.
+     * @dev The caller must be the inceptor or its approved trade operator. A fresh
+     *      identifier is generated after validation and never reused after cancellation.
      */
     function inceptTrade(
         address inceptor,
@@ -141,19 +142,20 @@ abstract contract SDCSingleTrade is ISDCTrade, TradeAuthorizable {
         int256 position,
         int256 paymentAmount,
         string memory initialSettlementData
-    ) external override onlyWhenTradeInactive returns (string memory) {
+    ) external override onlyWhenTradeInactive returns (string memory id) {
         _requireTradeParties(inceptor, counterparty);
         _requireTradeAuthorization(inceptor);
         require(position == 1 || position == -1, "Position can only be +1 or -1");
         require(paymentAmount != type(int256).min, "Payment amount cannot be int256 minimum");
 
+        id = _newTradeId();
         uint256 transactionHash = uint256(keccak256(abi.encode(
-            inceptor, counterparty, _tradeData, position, paymentAmount, initialSettlementData
+            id, inceptor, counterparty, _tradeData, position, paymentAmount, initialSettlementData
         )));
         pendingRequests[transactionHash] = inceptor;
         receivingParty = position == 1 ? inceptor : counterparty;
         upfrontPayment = position == 1 ? paymentAmount : -paymentAmount;
-        tradeID = Strings.toString(transactionHash);
+        tradeID = id;
         tradeData = _tradeData;
         tradeState = TradeState.Incepted;
         emit TradeIncepted(inceptor, counterparty, tradeID, _tradeData, position, paymentAmount, initialSettlementData);
@@ -166,6 +168,7 @@ abstract contract SDCSingleTrade is ISDCTrade, TradeAuthorizable {
      *      are determined by the stored economic parties, never by the operator.
      */
     function confirmTrade(
+        string memory _tradeId,
         address inceptor,
         address counterparty,
         string memory _tradeData,
@@ -175,8 +178,9 @@ abstract contract SDCSingleTrade is ISDCTrade, TradeAuthorizable {
     ) external override onlyWhenTradeIncepted {
         _requireTradeParties(inceptor, counterparty);
         _requireTradeAuthorization(counterparty);
+        _requireTradeId(_tradeId);
         uint256 transactionHash = uint256(keccak256(abi.encode(
-            inceptor, counterparty, _tradeData, position, paymentAmount, initialSettlementData
+            _tradeId, inceptor, counterparty, _tradeData, position, paymentAmount, initialSettlementData
         )));
         require(pendingRequests[transactionHash] == inceptor, "Confirmation fails due to inconsistent trade data or wrong party address");
         delete pendingRequests[transactionHash];
@@ -190,6 +194,7 @@ abstract contract SDCSingleTrade is ISDCTrade, TradeAuthorizable {
      * @notice Cancels an exact inception on behalf of its inceptor.
      */
     function cancelTrade(
+        string memory _tradeId,
         address inceptor,
         address counterparty,
         string memory _tradeData,
@@ -199,8 +204,9 @@ abstract contract SDCSingleTrade is ISDCTrade, TradeAuthorizable {
     ) external override onlyWhenTradeIncepted {
         _requireTradeParties(inceptor, counterparty);
         _requireTradeAuthorization(inceptor);
+        _requireTradeId(_tradeId);
         uint256 transactionHash = uint256(keccak256(abi.encode(
-            inceptor, counterparty, _tradeData, position, paymentAmount, initialSettlementData
+            _tradeId, inceptor, counterparty, _tradeData, position, paymentAmount, initialSettlementData
         )));
         require(pendingRequests[transactionHash] == inceptor, "Cancellation fails due to inconsistent trade data or wrong party address");
         delete pendingRequests[transactionHash];

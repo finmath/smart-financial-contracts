@@ -16,6 +16,13 @@
   `representable-contract-state` remains available.
 
 === Changed
+- FX atomic swaps support repeated bilateral trades with fixed tokens, parties and
+  settlement router, one pending quote at a time, retained per-trade history and
+  lifetime-unique identifiers. Router registration persists across trades.
+- ERC-6123 inception generates and returns a lifetime-unique `tradeId`;
+  confirmation and cancellation take that identifier as their first argument.
+  The maintained ERC-6123 reference and bond implementations,
+  callers and examples use the revised ABI.
 - Solidity packages grouped under `solidity/`: maintained framework, derivative
   contracts, standalone examples and source references, each retaining its build
   configuration and dependencies.
