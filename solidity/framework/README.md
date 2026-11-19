@@ -4,7 +4,7 @@ This directory contains the Smart Product Framework and demo implementations
 originally distributed through the ERC-8100 repository
 (`representable-contract-state`). The maintained core includes product definitions,
 factories, client approval, indications, XML representation and settlement helpers.
-The original bond and interest-rate-swap demos and the FX atomic swap demo have
+The original bond and interest-rate-swap demos and the FX Spot Trade demo have
 separate Foundry projects.
 The maintained [fixed-rate bond example](contracts/examples/fixedRateBond/README.md)
 runs with the core Hardhat tests and uses an existing ERC-20 asset and a local
@@ -38,10 +38,10 @@ npm ci
 forge test
 ```
 
-The independent [FX atomic swap demo](../examples/fx-atomic-swap/README.md) needs Foundry:
+The independent [FX Spot Trade demo](../examples/fx-spot-trade/README.md) needs Foundry:
 
 ```sh
-cd solidity/examples/fx-atomic-swap
+cd solidity/examples/fx-spot-trade
 forge test
 ```
 
@@ -58,7 +58,7 @@ Their existing source copies in `representable-contract-state` remain available.
 | [`contracts/examples/fixedRateBond/`](contracts/examples/fixedRateBond/README.md) | FixedRateBond, its library and factory, with local demo adapters |
 | `contracts/mocks/`, `test/` | Core framework, representation and settlement regression tests |
 | [`../examples/erc8100-products/`](../examples/erc8100-products/README.md) | Original bond and interest-rate-swap framework demos, with their own dependencies and tests |
-| [`../examples/fx-atomic-swap/`](../examples/fx-atomic-swap/README.md) | FX atomic swap contracts, tests and renderer walkthrough |
+| [`../examples/fx-spot-trade/`](../examples/fx-spot-trade/README.md) | FX Spot Trade contracts, tests and renderer walkthrough |
 | `../origins/representable-contract-state/` | Original extracted source history and reference material |
 | `../origins/product-framework/` | Retained source license |
 

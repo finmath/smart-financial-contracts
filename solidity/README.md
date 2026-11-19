@@ -8,7 +8,7 @@ dependencies, compiler configuration, tests and generated output.
 | [`framework/`](framework/README.md) | Smart Product Framework, ERC-8100 resources, settlement helpers and the fixed-rate bond example | Node.js 22.13+, Hardhat 3 |
 | [`derivatives/`](derivatives/doc/README.md) | Derivative contracts and delivery-versus-payment implementations | Node.js 16, Hardhat 2 |
 | [`examples/erc8100-products/`](examples/erc8100-products/README.md) | Original SimpleBond and InterestRateSwap demonstrations | Node.js 22+, Foundry |
-| [`examples/fx-atomic-swap/`](examples/fx-atomic-swap/README.md) | FX atomic swap demonstration | Foundry |
+| [`examples/fx-spot-trade/`](examples/fx-spot-trade/README.md) | FX Spot Trade demonstration | Foundry |
 | [`ercs/erc-6123/`](ercs/erc-6123/README.md) | Maintained ERC-6123 interfaces, specification and reference implementations | Node.js 22, Hardhat 2 |
 | `ercs/erc-7573/` | Public ERC-7573 reference snapshot | Reference material |
 | [`origins/`](origins/README.md) | Preserved original sources, resources and license notices | Reference material |
@@ -31,8 +31,8 @@ selected package:
 # Original product demonstrations
 (cd solidity/examples/erc8100-products && npm ci && forge test)
 
-# FX atomic swap
-(cd solidity/examples/fx-atomic-swap && forge test)
+# FX Spot Trade
+(cd solidity/examples/fx-spot-trade && forge test)
 ```
 
 There is no shared npm installation at `solidity/`. The framework and derivative

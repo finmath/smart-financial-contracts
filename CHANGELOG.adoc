@@ -11,12 +11,12 @@
   existing ERC-20 asset and local payment adapter in
   `solidity/framework/contracts/examples/fixedRateBond/`; lifecycle tests cover agreement,
   asset delivery, coupon payments and redemption between participant wallets.
-- FX atomic swap contracts, factory, Foundry tests and ERC-8100 lifecycle
-  walkthrough in `solidity/examples/fx-atomic-swap/`. The existing example in
+- FX Spot Trade contracts, factory, Foundry tests and ERC-8100 lifecycle
+  walkthrough in `solidity/examples/fx-spot-trade/`. The existing example in
   `representable-contract-state` remains available.
 
 === Changed
-- FX atomic swaps support repeated bilateral trades with fixed tokens, parties and
+- FX Spot Trade instances support repeated bilateral trades with fixed tokens, parties and
   settlement router, one pending quote at a time, retained per-trade history and
   lifetime-unique identifiers. Router registration persists across trades.
 - ERC-6123 inception generates and returns a lifetime-unique `tradeId`;

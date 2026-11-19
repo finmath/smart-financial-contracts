@@ -13,7 +13,7 @@ compiler and dependency configurations for each package.
 | Smart Product Framework and demo implementations | [`solidity/framework/`](solidity/framework/README.md) | `cd solidity/framework && npm ci && npm test` |
 | Fixed-rate bond with local demo adapters | [`solidity/framework/contracts/examples/fixedRateBond/`](solidity/framework/contracts/examples/fixedRateBond/README.md) | Included in the framework tests |
 | Original ERC-8100 bond and interest-rate-swap demos | [`solidity/examples/erc8100-products/`](solidity/examples/erc8100-products/README.md) | `cd solidity/examples/erc8100-products && npm ci && forge test` |
-| FX atomic swap demo | [`solidity/examples/fx-atomic-swap/`](solidity/examples/fx-atomic-swap/README.md) | `cd solidity/examples/fx-atomic-swap && forge test` |
+| FX Spot Trade demo | [`solidity/examples/fx-spot-trade/`](solidity/examples/fx-spot-trade/README.md) | `cd solidity/examples/fx-spot-trade && forge test` |
 | Java valuation oracle, derivative models, XML schemas and demos | [`src/`](src/), [`pom.xml`](pom.xml) | Java 17: `mvn clean verify` |
 | Derivative service frontend | [`frontend/`](frontend/) | `cd frontend && npm ci && npm run build` |
 | Derivative contracts | [`solidity/derivatives/`](solidity/derivatives/doc/README.md) | `cd solidity/derivatives && npm ci --ignore-scripts && npm test` |
@@ -44,7 +44,7 @@ uses `FixedRateBond` and `FixedRateBondLib` with an existing ERC-20 asset and a
 local cash-settlement adapter. Its tests run agreement, asset delivery, coupons
 and redemption with real transfers between participant wallets on an isolated chain.
 
-The [FX atomic swap demo](solidity/examples/fx-atomic-swap/README.md) includes
+The [FX Spot Trade demo](solidity/examples/fx-spot-trade/README.md) includes
 ERC-20 settlement contracts, a factory, local tests and an ERC-8100 lifecycle
 walkthrough. Its existing copy in `representable-contract-state` remains available.
 
