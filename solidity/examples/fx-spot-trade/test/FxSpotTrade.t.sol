@@ -82,10 +82,12 @@ contract FxSpotTradeTest {
         require(quoteToken == address(quote) && partyA == PARTY_A && partyB == PARTY_B, "event data");
     }
 
-    function testXmlUsesFxSpotTradeRootAndNamespace() public view {
+    function testXmlUsesSmartFinancialProductEnvelope() public view {
         bytes memory xml = bytes(trade.stateXmlTemplate());
-        bytes memory prefix = bytes("<FxSpotTrade xmlns='urn:example:fx-spot-trade' ");
-        bytes memory suffix = bytes("</FxSpotTrade>");
+        bytes memory prefix = bytes(
+            '<?xml version="1.0" encoding="UTF-8"?>\n<SmartFinancialProduct xmlns="urn:smart-product-framework:financial-product:1.0"'
+        );
+        bytes memory suffix = bytes("</SmartFinancialProduct>\n");
         require(xml.length >= prefix.length + suffix.length, "XML length");
         for (uint256 i; i < prefix.length; ++i) {
             require(xml[i] == prefix[i], "XML root and namespace");

@@ -63,6 +63,16 @@ jobs:
           cache: false
       - name: Test FX Spot Trade lifecycle
         run: forge test -vv
+      - name: Check generated XML template
+        run: python3 scripts/generate-xml-template.py --check
+      - name: Set up Java for the XML renderer
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+          cache: maven
+      - name: Test ERC-8100 XML rendering
+        run: mvn -B -f test/xml/pom.xml test
 
   erc8100-products:
     name: Original ERC-8100 product demo tests

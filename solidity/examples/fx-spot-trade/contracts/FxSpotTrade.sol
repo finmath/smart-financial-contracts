@@ -5,6 +5,7 @@ import "./ISDCTrade.sol";
 import {TradeAuthorizable} from "@finmath.net/sdc/contracts/TradeAuthorizable.sol";
 import {TradeIdGenerator} from "@finmath.net/sdc/contracts/TradeIdGenerator.sol";
 import "./ERC20PvPSettlementRouter.sol";
+import {FxSpotTradeXml} from "./FxSpotTradeXml.sol";
 
 /// @notice Interface for exposing an ERC-8100-style XML state template.
 interface IXMLRepresentableState {
@@ -325,40 +326,12 @@ contract FxSpotTrade is ISDCTrade, IXMLRepresentableState, TradeAuthorizable, Tr
     }
 
     /**
-     * @notice Returns the XML template for fixed configuration and the latest trade.
+     * @notice Returns the latest trade in the common SmartFinancialProduct XML envelope.
      * @dev Historical records remain accessible through getTrade(id).
      * @return XML template with bindings to the semantically relevant state.
      */
     function stateXmlTemplate() external pure override returns (string memory) {
-        return string.concat(
-            "<FxSpotTrade xmlns='urn:example:fx-spot-trade' ",
-            "xmlns:evmstate='urn:evm:state:1.0' ",
-            "evmstate:chain-id='' evmstate:contract-address='' evmstate:block-number=''>",
-            "<Lifecycle>",
-            "<TradeId evmstate:call='tradeId()(string)' evmstate:format='string'/>",
-            "<Phase evmstate:call='phase()(uint8)' evmstate:format='decimal'/>",
-            "<Inceptor evmstate:call='inceptor()(address)' evmstate:format='address'/>",
-            "</Lifecycle>",
-            "<Parties>",
-            "<Party role='A' evmstate:call='partyA()(address)' evmstate:format='address'/>",
-            "<Party role='B' evmstate:call='partyB()(address)' evmstate:format='address'/>",
-            "</Parties>",
-            "<Tokens>",
-            "<Token role='base' evmstate:call='baseToken()(address)' evmstate:format='address'/>",
-            "<Token role='quote' evmstate:call='quoteToken()(address)' evmstate:format='address'/>",
-            "</Tokens>",
-            "<SettlementRouter evmstate:call='settlementRouter()(address)' evmstate:format='address'/>",
-            "<Terms view='inceptor'>",
-            "<Position token='base' unit='smallest-token-unit' ",
-            "evmstate:call='position()(int256)' evmstate:format='decimal'/>",
-            "<PaymentAmount token='quote' unit='smallest-token-unit' ",
-            "evmstate:call='paymentAmount()(int256)' evmstate:format='decimal'/>",
-            "<TradeData evmstate:call='tradeData()(string)' evmstate:format='string'/>",
-            "<InitialSettlementData evmstate:call='initialSettlementData()(string)' ",
-            "evmstate:format='string'/>",
-            "</Terms>",
-            "</FxSpotTrade>"
-        );
+        return FxSpotTradeXml.template();
     }
 
     /**

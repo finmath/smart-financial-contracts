@@ -9,8 +9,14 @@ payment-versus-payment (PvP) settlement. This standalone demo supports successiv
 trades and operator approvals; the [ERC-6123 reference example](../../ercs/erc-6123/contracts/examples/FxSpotTrade/)
 is single-use and requires direct participant calls.
 
+The ERC-8100 view uses the same `SmartFinancialProduct` envelope as the bond
+contracts, with an FX-specific state profile and a self-contained XSLT view.
+See the [XML template and FpML mapping](resources/README.md).
+
 Deploy the contracts from this directory for these calls. Existing deployments
 retain their original methods and events; there are no compatibility aliases.
+The XML envelope also requires a new factory/trade deployment; existing contracts
+retain their original `stateXmlTemplate()` response.
 
 The scenario is:
 
@@ -158,10 +164,14 @@ The project layout is:
 │   ├── ERC20TokenExample.sol
 │   ├── FxSpotTrade.sol
 │   ├── FxSpotTradeFactory.sol
+│   ├── FxSpotTradeXml.sol
 │   └── ISDCTrade.sol
+├── resources/                         # XML template, schema and XSLT view
+├── scripts/generate-xml-template.py
 └── test/
     ├── FxSpotTrade.t.sol
-    └── TestSupport.sol
+    ├── TestSupport.sol
+    └── xml/                            # ERC-8100 renderer integration tests
 ```
 
 `ERC20TokenExample.sol` implements ERC-8100 in addition to its minimal ERC-20-style interface. Because Solidity mappings are not enumerable, the example records every balance account and allowance pair touched by its public operations and exposes them through `balanceEntries()` and `allowanceEntries()`. The renderer uses the ERC-8100 array-of-tuples profile to turn those views into repeated XML elements. Zero balances and consumed allowances remain visible once their keys have been tracked.
@@ -476,9 +486,13 @@ At this point, the rendered representation should show conceptually:
 </Terms>
 ```
 
-The root is `FxSpotTrade` in namespace `urn:example:fx-spot-trade`. It also records
-the rendered chain ID, trade instance address, and block number. Exact whitespace
-and whether binding attributes remain visible are renderer serialization details.
+The root is `SmartFinancialProduct` in namespace
+`urn:smart-product-framework:financial-product:1.0`, with `type="FxSpotTrade"`.
+It records the rendered chain ID, trade instance address and block number.
+The `FxSpotTrade` state is nested under `ProductResources/ProductTermsTemplate`
+in namespace `urn:example:fx-spot-trade`; the router is under `DeploymentState`.
+Exact whitespace and whether binding attributes remain visible are renderer
+serialization details.
 
 ### 9. Incept the trade as Party A
 
@@ -807,6 +821,18 @@ The tests run locally without Anvil or the renderer service. They cover settleme
 permissions and matching terms, cancellation and authorization revocation,
 failed-transfer rollback, sequential reuse, trade history, ID replay protection,
 and reentrancy during settlement.
+
+With Java 21 and Maven, the XML integration tests start an isolated Anvil chain
+and use the real ERC-8100 renderer. From the example directory:
+
+```bash
+python3 scripts/generate-xml-template.py --check
+forge build
+mvn -B -f test/xml/pom.xml test
+```
+
+They validate the common envelope and FX schema, exact amounts, payer/receiver
+directions, lifecycle snapshots, text escaping and the embedded stylesheet digest.
 
 ## Standards and renderer references
 
