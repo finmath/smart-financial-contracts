@@ -1,9 +1,8 @@
 # ERC-6123 specification and reference implementation
 
-This package started from `ERCS/erc-6123.md` and `assets/erc-6123/`
-in `~/git/ERCs` at
-[`56c2308c8d69e75e417bc2d2d551ff6f463ec18d`](https://github.com/finmath/ERCs/commit/56c2308c8d69e75e417bc2d2d551ff6f463ec18d).
-It contains the explicit-party trade interface described below.
+This package follows the ERC-6123 trade interface in `assets/erc-6123/`
+at ERCs commit [`1cebfad9`](https://github.com/finmath/ERCs/commit/1cebfad9).
+The local derivative references add the operator authorization described below.
 
 The local build uses Node.js 22.13 or newer, Hardhat 2, Solidity 0.8.24 and
 OpenZeppelin 5.0.2. A lockfile fixes the dependency versions. Solidity 0.8.24 is
@@ -11,7 +10,7 @@ required by the included FX reference example; its `ISDCTrade` import is adjuste
 for its directory within this package. Package metadata points to this repository.
 
 The FX reference under `contracts/examples/FxSpotTrade/` is synchronized from
-`assets/erc-6123/contracts/examples/FxSpotTrade/` in the local ERCs checkout. It is
+`assets/erc-6123/contracts/examples/FxSpotTrade/` at that commit. It is
 single-use and requires direct participant calls. The maintained
 [FX Spot Trade demo](../../examples/fx-spot-trade/README.md) adds repeated trades,
 operator approvals, a Foundry lifecycle suite and a renderer walkthrough.
@@ -80,6 +79,14 @@ npm test
 ## Description
 
 The reference SDC implementation can be unit tested with Hardhat to understand the trade process logic.
+
+These implementations illustrate the protocol. `ERC20Settlement` allows unrestricted
+`mint` and `setSDCAddress` calls, and `SDCSingleTradePledgedBalance.performSettlement`
+does not authenticate the valuation provider. Applications must define and enforce
+those permissions before using these examples with real assets.
+
+The package uses [CC0-1.0](LICENSE.md). Packaging includes sources, documentation,
+tests and build configuration; generated build outputs are excluded.
 
 ### Compile and run tests with Hardhat
 

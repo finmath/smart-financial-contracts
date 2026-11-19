@@ -1,9 +1,9 @@
 {
   "name": "@finmath.net/sdc",
-  "version": "0.8.1",
+  "version": "0.9.0",
   "description": "Solidity Smart Derivative Contracts",
   "author": "Christian Fries, Peter Kohl-Landgraf, Alexandros Korpis",
-  "license": "ISC",
+  "license": "CC0-1.0",
   "homepage": "https://github.com/finmath/smart-financial-contracts/tree/main/solidity/ercs/erc-6123",
   "scripts": {
     "build": "hardhat compile",
@@ -39,12 +39,6 @@
   "publishConfig": {
     "access": "public"
   },
-  "files": [
-    "contracts/",
-    "doc/",
-    "erc-6123.md",
-    "README.md"
-  ],
   "engines": {
     "node": ">=22.13.0"
   }
