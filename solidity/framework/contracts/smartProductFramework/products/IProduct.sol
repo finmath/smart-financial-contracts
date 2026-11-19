@@ -3,13 +3,10 @@ pragma solidity ^0.8.24;
 
 /**
  * @title IProduct
- * @notice Interface for a deployed product exposing its immutable deployment
- *         context.
+ * @notice Exposes the product's deployment context and offered legal manifest.
  *
- * @dev The deployment context is assembled by the product registry and fixed at
- *      construction time. It deliberately contains NO counterparty information:
- *      a product may be issued with or without preceding trade requests, and the
- *      client is only bound later during trade inception.
+ * @dev The registry fixes the common deployment context at construction. Concrete
+ *      products define their counterparties and agreement lifecycle.
  *
  * @author Raphael Prandtl
  */
@@ -34,6 +31,14 @@ interface IProduct {
     /// @notice Returns the product terms template resource.
     function productTermsTemplate() external view returns (address);
 
-    /// @notice Returns the product documentation template resource.
-    function productDocumentationTemplate() external view returns (address);
+    // ------------------------------ Offer State ------------------------------ */
+
+    /// @notice Finalized text resource selected at trade inception; zero before the first offer.
+    function legalDocumentsManifest() external view returns (address);
+
+    /// @notice Keccak-256 of the manifest bytes captured at trade inception; zero before the first offer.
+    function legalDocumentsHash() external view returns (bytes32);
+
+    /// @notice Canonical web3 URI for the offered manifest, or the empty string before an offer.
+    function legalDocumentsURI() external view returns (string memory);
 }

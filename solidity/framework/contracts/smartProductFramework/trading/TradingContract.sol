@@ -122,11 +122,11 @@ contract TradingContract is ReentrancyGuard {
         emit TradeRequestRejected(tradeRequestId);
     }
 
-    /// @notice Offer a product for one or more requests of the same definition revision.
-    /// @dev The issuing client supplies the final payload. A fulfilled request does not bind its requester to a trade.
-    function issueProductForRequests(bytes32[] calldata tradeRequestIds, bytes calldata productPayload)
-        external onlyTrader nonReentrant returns (address product)
-    {
+    /// @notice Create a product for one or more requests of the same definition revision.
+    /// @dev Fulfillment links each request to the deployed instance. The parties agree on an offer in the product.
+    function issueProductForRequests(
+        bytes32[] calldata tradeRequestIds, bytes calldata productPayload
+    ) external onlyTrader nonReentrant returns (address product) {
         if (tradeRequestIds.length == 0) revert NoTradeRequests();
         TradeRequest storage first = _activeRequest(tradeRequestIds[0]);
         bytes32 definitionId = first.productDefinitionId;
@@ -149,10 +149,10 @@ contract TradingContract is ReentrancyGuard {
         }
     }
 
-    /// @notice Offer a new product directly, without preceding requests.
-    function issueProduct(bytes32 productDefinitionId, uint256 expectedVersion, bytes calldata productPayload)
-        external onlyTrader nonReentrant returns (address product)
-    {
+    /// @notice Create a new product directly, without preceding requests.
+    function issueProduct(
+        bytes32 productDefinitionId, uint256 expectedVersion, bytes calldata productPayload
+    ) external onlyTrader nonReentrant returns (address product) {
         _requireActiveDefinition(productDefinitionId, expectedVersion);
         return productRegistry.issueProduct(productDefinitionId, expectedVersion, productPayload);
     }

@@ -22,8 +22,8 @@ import {CommonDeploymentParams, ProductDeploymentParams} from "../productFactori
  * @title ProductDefinitionRegistry
  * @notice Registry for versioned product definitions, indication assignments and product issuance.
  *
- * @dev Each product definition anchors the exact factory and finalized text
- *      resources used for deployment. The registry validates the anchored
+ * @dev Each product definition anchors the exact factory and finalized product
+ *      terms template used for deployment. The registry validates the anchored
  *      components, manages lifecycle state, and deploys products directly
  *      through the selected factory.
  *
@@ -198,7 +198,7 @@ contract ProductDefinitionRegistry is IProductDefinitionRegistry, IXMLRepresenta
         _productDefinitionIds.add(productDefinitionId);
         _touchProductDefinition(definitionStorage);
 
-        emit ProductDefinitionPublished(productDefinitionId, params.productDefinition.productFactory, params.productDefinition.productTermsTemplate, params.productDefinition.productDocumentationTemplate);
+        emit ProductDefinitionPublished(productDefinitionId, params.productDefinition.productFactory, params.productDefinition.productTermsTemplate);
         emit ProductDefinitionStatusChanged(productDefinitionId, ProductDefinitionStatus.Unknown, ProductDefinitionStatus.Active);
         emit StatePartUpdated(msg.sender, address(this), _partIdFromProductDefinitionId(productDefinitionId), definitionStorage.version);
     }
@@ -217,7 +217,7 @@ contract ProductDefinitionRegistry is IProductDefinitionRegistry, IXMLRepresenta
         definitionStorage.productDefinition = productDefinition;
         _touchProductDefinition(definitionStorage);
 
-        emit ProductDefinitionUpdated(productDefinitionId, productDefinition.productFactory, productDefinition.productTermsTemplate, productDefinition.productDocumentationTemplate, definitionStorage.version);
+        emit ProductDefinitionUpdated(productDefinitionId, productDefinition.productFactory, productDefinition.productTermsTemplate, definitionStorage.version);
         emit StatePartUpdated(msg.sender, address(this), _partIdFromProductDefinitionId(productDefinitionId), definitionStorage.version);
     }
 
@@ -338,9 +338,9 @@ contract ProductDefinitionRegistry is IProductDefinitionRegistry, IXMLRepresenta
     }
 
     /// @inheritdoc IProductDefinitionRegistry
-    function issueProduct(bytes32 productDefinitionId, uint256 expectedVersion, bytes calldata productPayload)
-        external override nonReentrant returns (address product)
-    {
+    function issueProduct(
+        bytes32 productDefinitionId, uint256 expectedVersion, bytes calldata productPayload
+    ) external override nonReentrant returns (address product) {
         address provider = TradingContractFactory(tradingContractFactory).clientOf(msg.sender);
         if (provider == address(0)) revert UnrecognizedTradingContract(msg.sender);
         if (!IClientRegistry(clientRegistryAddress).isEligibleClient(provider, productDefinitionId)) {
@@ -359,8 +359,7 @@ contract ProductDefinitionRegistry is IProductDefinitionRegistry, IXMLRepresenta
                 productProvider: provider,
                 productDefinitionId: productDefinitionId,
                 productDefinitionVersion: expectedVersion,
-                productTermsTemplate: components.productTermsTemplate,
-                productDocumentationTemplate: components.productDocumentationTemplate
+                productTermsTemplate: components.productTermsTemplate
             }),
             productPayload: productPayload
         }));
@@ -399,10 +398,6 @@ contract ProductDefinitionRegistry is IProductDefinitionRegistry, IXMLRepresenta
             "<ProductTermsTemplate>",
             _include(definitionStorage.productDefinition.productTermsTemplate),
             "</ProductTermsTemplate>",
-            _resourceReference(
-                "ProductDocumentationTemplate",
-                definitionStorage.productDefinition.productDocumentationTemplate
-            ),
             "</ProductResources>",
             _productIndicationAssignmentXml(productDefinitionId),
             "</ProductDefinition>"
@@ -430,20 +425,6 @@ contract ProductDefinitionRegistry is IProductDefinitionRegistry, IXMLRepresenta
             " indicationId=\"", _bytes32ToHexString(assignment.indicationId), "\"",
             " partId=\"", assignment.partId.toString(), "\"",
             "/>"
-        );
-    }
-
-    /// @notice Returns an XML reference to a finalized text resource.
-    function _resourceReference(string memory elementName, address resource) internal view returns (string memory) {
-        ITextResource textResource = ITextResource(resource);
-        return string.concat(
-            "<",
-            elementName,
-            " href=\"",
-            LibString.escapeHTML(textResource.web3Url()),
-            "\" integrity=\"",
-            _integrity(textResource.contentHash()),
-            "\"/>"
         );
     }
 
@@ -552,7 +533,6 @@ contract ProductDefinitionRegistry is IProductDefinitionRegistry, IXMLRepresenta
         IProductFactory factory = IProductFactory(productDefinition.productFactory);
         _validateProductFactory(productDefinition.productFactory);
         _validateTextResource(productDefinition.productTermsTemplate, factory.productTermsTemplateResourceType());
-        _validateTextResource(productDefinition.productDocumentationTemplate, factory.productDocumentationTemplateResourceType());
     }
 
     function _validateProductFactory(address factory) internal view {
@@ -568,11 +548,11 @@ contract ProductDefinitionRegistry is IProductDefinitionRegistry, IXMLRepresenta
         } catch {
             revert ContractCallFailed(factory, "productRegistryAddress()");
         }
-        // Factory must implement meaningful product specifications: productPayloadSchema, productTermsTemplateResourceType, productDocumentationTemplateResourceType
+        // Factory must declare its payload schema and the resource type of its terms template.
         if (bytes(productFactory.productPayloadSchema()).length == 0) {
             revert InvalidProductFactory(factory);
         }
-        if (productFactory.productTermsTemplateResourceType() == bytes32(0) || productFactory.productDocumentationTemplateResourceType() == bytes32(0)) {
+        if (productFactory.productTermsTemplateResourceType() == bytes32(0)) {
             revert InvalidProductFactory(factory);
         }
     }

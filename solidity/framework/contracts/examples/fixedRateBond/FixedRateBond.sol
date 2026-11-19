@@ -24,6 +24,7 @@ import {IDecryptionContractInceptionCallback} from "@finmath.net/dvp/contracts/I
 
 //will be moved to utils folder from OpenZeppelin v5.0
 import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
 import {ISDCTrade} from "@finmath.net/sdc/contracts/ISDCTrade.sol";
 
 /**
@@ -88,7 +89,7 @@ contract FixedRateBond is FixedRateBondConventions, AbstractProduct, DemoAssetLo
     /// @notice Client-only registry used for eligibility checks.
     address public immutable clientRegistry;
 
-    /// @notice Deployment-time commitment to immutable economics and finalized resources.
+    /// @notice Deployment-time commitment to the economics and finalized product terms template.
     bytes32 public immutable economicTermsHash;
 
     /// @notice Aggregate nominal amount at issuance, scaled by amountScale.
@@ -135,7 +136,7 @@ contract FixedRateBond is FixedRateBondConventions, AbstractProduct, DemoAssetLo
     /// @notice Contractual maturity as a Unix timestamp; set only during construction.
     uint64 public maturityDate;
 
-    /// @notice Terms hash frozen at inception.
+    /// @notice Latest issuer offer, frozen upon confirmation or cancellation. Zero before inception.
     bytes32 public agreedTermsHash;
 
     /// @notice Delivery and repayment progress; a failed escrow attempt does not change it.
@@ -244,9 +245,14 @@ contract FixedRateBond is FixedRateBondConventions, AbstractProduct, DemoAssetLo
 
     // ------------------------------ Trade Lifecycle ------------------------------ */
 
+    /// @notice Offer the deployed bond to its designated buyer using a finalized legal manifest.
+    function inceptTrade(address manifest) external onlyIssuer nonReentrant returns (string memory) {
+        return _inceptTrade(manifest, buyer, int256(initialAggregateAmount), "");
+    }
+
     /**
      * @inheritdoc ISDCTrade
-     * @dev Issuer-driven. tradeData must be the hex encoded termsHash() and
+     * @dev Issuer-driven. tradeData is the 0x-prefixed address of the finalized manifest and
      *      position must equal initialAggregateAmount. The payment amount is
      *      derived from the issue price, so the supplied value is ignored to
      *      rule out inconsistencies with the term sheet.
@@ -254,6 +260,10 @@ contract FixedRateBond is FixedRateBondConventions, AbstractProduct, DemoAssetLo
      *      Records the issuer's proposed terms; delivery requires buyer confirmation.
      */
     function inceptTrade(address withParty, string memory tradeData, int position, int256 /* paymentAmount */, string memory initialSettlementData) external override onlyIssuer nonReentrant returns (string memory) {
+        return _inceptTrade(ProductLib.parseManifestAddress(tradeData), withParty, position, initialSettlementData);
+    }
+
+    function _inceptTrade(address manifest, address withParty, int256 position, string memory initialSettlementData) private returns (string memory) {
         if (tradeStatus != TradeStatus.Inactive && tradeStatus != TradeStatus.Incepted) revert InvalidTradeStatus(tradeStatus);
         if (withParty != buyer) revert InvalidCounterparty(withParty);
         if (position <= 0 || uint256(position) != initialAggregateAmount) {
@@ -263,15 +273,12 @@ contract FixedRateBond is FixedRateBondConventions, AbstractProduct, DemoAssetLo
             revert BuyerNotEligible(buyer);
         }
 
-        bytes32 current = termsHash();
-        bytes32 supplied = ProductLib.parseHash(tradeData);
-        if (supplied != current) revert TermsMismatch(current, supplied);
-
-        agreedTermsHash = current;
+        _setLegalDocuments(manifest);
+        agreedTermsHash = keccak256(abi.encode(economicTermsHash, legalDocumentsHash, assetToken, paymentContract));
         _setTradeStatus(TradeStatus.Incepted);
 
         string memory id = tradeId();
-        emit TradeIncepted(msg.sender, withParty, id, tradeData, position, 0, initialSettlementData);
+        emit TradeIncepted(msg.sender, withParty, id, Strings.toHexString(uint256(agreedTermsHash), 32), position, 0, initialSettlementData);
 
         return id;
     }
@@ -288,8 +295,6 @@ contract FixedRateBond is FixedRateBondConventions, AbstractProduct, DemoAssetLo
 
         bytes32 supplied = ProductLib.parseHash(tradeData);
         if (supplied != agreedTermsHash) revert TermsMismatch(agreedTermsHash, supplied);
-        bytes32 current = termsHash();
-        if (current != agreedTermsHash) revert TermsMismatch(agreedTermsHash, current);
 
         confirmedAt = uint64(block.timestamp);
         _exchange = AssetExchange(issuer, buyer, settlementAmount());
@@ -552,9 +557,9 @@ contract FixedRateBond is FixedRateBondConventions, AbstractProduct, DemoAssetLo
 
     // ------------------------------ Terms ------------------------------ */
 
-    /// @notice Trade commitment to economics and the immutable asset/payment contracts.
+    /// @notice Current offer commitment to economics, legal manifest content and settlement contracts. Zero before inception.
     function termsHash() public view returns (bytes32) {
-        return keccak256(abi.encode(economicTermsHash, assetToken, paymentContract));
+        return agreedTermsHash;
     }
 
     /// @notice Returns the trade identifier of this bond.

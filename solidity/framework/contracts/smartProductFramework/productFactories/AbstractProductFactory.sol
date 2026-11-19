@@ -91,9 +91,6 @@ abstract contract AbstractProductFactory is IProductFactory {
     /// @inheritdoc IProductFactory
     function productTermsTemplateResourceType() external pure virtual override returns (bytes32);
 
-    /// @inheritdoc IProductFactory
-    function productDocumentationTemplateResourceType() external pure virtual override returns (bytes32);
-
     // ------------------------------ Product Indication ------------------------------ */
 
     function isAcceptedIndicationCategory(bytes32 indicationCategory) external view virtual override returns (bool);

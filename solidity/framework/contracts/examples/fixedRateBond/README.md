@@ -27,11 +27,15 @@ contract-size limits remain enabled, including for factory deployment.
    publishes a definition whose factory fixes the asset and payment addresses.
    The buyer and issuer each open a trading contract. The buyer sends a
    nonbinding request to the issuer's trading address. The issuer uses that
-   contract to issue a bond through the product registry. The payment operator
-   then authorizes the bond in the payment adapter.
-2. The issuer incepts the trade and the buyer confirms the same terms hash. That
-   hash binds the economics, finalized resource hashes, asset and payment contracts.
-   Confirmation enables delivery of the already-existing asset.
+   contract to create the bond through the product registry at the requested
+   definition revision. The payment operator authorizes the bond in the adapter.
+2. The issuer makes an offer on the bond with `inceptTrade(manifestAddress)`.
+   This selects a finalized on-chain `TextResource` listing the issuance
+   conditions and their content hashes. The buyer reviews those documents and
+   calls `confirmTrade` with the hash covering the bond economics, legal
+   manifest, asset token and payment contract. A different document version
+   offered before acceptance requires a new confirmation hash. Confirmation
+   enables delivery of the existing asset.
 3. The issuer approves the asset escrow. The buyer incepts delivery and a matching
    payment. The operator commits two outcome hashes; the bond checks the payment
    context and locks the asset. Success moves cash and asset units atomically.

@@ -73,7 +73,6 @@ interface IVersionedPaymentOracleConfiguration {
 /// @dev Read through the bond ABI to keep its factory-embedded wrapper small.
 interface IVersionedBondRepresentation {
     function productTermsTemplate() external view returns (address);
-    function productDocumentationTemplate() external view returns (address);
     function paymentContract() external view returns (address);
     function initialAggregateAmount() external view returns (uint256);
     function issuePrice() external view returns (uint256);
@@ -123,17 +122,15 @@ library FixedRateBondLib {
     error UnsupportedStateVersion();
 
     /// @notice Revision of stored bond state and its versioned payment-oracle configuration.
-    /// @dev Both resource addresses are immutable. Finalized TextResources using the supported
-    ///      versioned XML getter profile are configurable independently of this implementation.
-    ///      No template bytes or content hash are embedded in the contract. External counters
-    ///      remain included after confirmation so the aggregate can never decrease.
+    /// @dev The terms template is finalized and each offer or revision of the legal manifest
+    ///      increments localVersion. External counters remain included after confirmation so the
+    ///      aggregate can never decrease.
     ///      Live token diagnostics (assetLockStatus) are outside that profile; consumers must
     ///      not use this witness for such bindings. The backend rejects those tuple bindings.
     ///      Unversioned dependencies make the witness unavailable rather than risk stale reuse.
     function representedStateVersion(uint256 localVersion) external view returns (uint256) {
         IVersionedBondRepresentation bond = IVersionedBondRepresentation(address(this));
-        if (!ITextResource(bond.productTermsTemplate()).isFinalized()
-            || !ITextResource(bond.productDocumentationTemplate()).isFinalized()) {
+        if (!ITextResource(bond.productTermsTemplate()).isFinalized()) {
             revert UnsupportedStateVersion();
         }
         return localVersion
@@ -198,7 +195,7 @@ library FixedRateBondLib {
         clientRegistry = IProductDefinitionRegistry(common.productRegistry).clientRegistryAddress();
         if (clientRegistry == address(0)) revert ZeroAddress("clientRegistry");
         _initializeCoupons(p, periods);
-        economicTermsHash = _economicTermsHash(p, common.productProvider, common.productTermsTemplate, common.productDocumentationTemplate);
+        economicTermsHash = _economicTermsHash(p, common.productProvider, common.productTermsTemplate);
     }
 
     function _initializeCoupons(FixedRateBondDeploymentPayload memory p, CouponPeriod[] storage periods) private {
@@ -261,14 +258,13 @@ library FixedRateBondLib {
         }
     }
 
-    function _economicTermsHash(FixedRateBondDeploymentPayload memory p, address issuer, address termsTemplate, address documentationTemplate)
+    function _economicTermsHash(FixedRateBondDeploymentPayload memory p, address issuer, address termsTemplate)
         private view returns (bytes32)
     {
         // A static tuple is encoded inline: identical to the flat v6 vector with all eleven
         // fields listed individually, without keeping every value live on the compiler stack.
         bytes32 payloadHash = keccak256(abi.encode(address(this), issuer, p.terms, p.couponPeriods));
-        return keccak256(abi.encode(payloadHash, ITextResource(termsTemplate).contentHash(),
-            ITextResource(documentationTemplate).contentHash()));
+        return keccak256(abi.encode(payloadHash, ITextResource(termsTemplate).contentHash()));
     }
 
     /// @notice ICMA document-status label for initial delivery completion.

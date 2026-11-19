@@ -5,9 +5,8 @@ pragma solidity ^0.8.24;
  * @title IProductDefinitionRegistry
  * @notice Interface for publishing product definitions and managing their lifecycle.
  *
- * @dev Each definition anchors the exact product factory and finalized text
- *      resources used to deploy products. Implementations must validate the
- *      resources against the specification exposed by the factory.
+ * @dev Each definition anchors the exact product factory and finalized product terms
+ *      template. Implementations validate the template against the factory specification.
  *
  *      Product definition ids are derived as:
  *
@@ -36,12 +35,10 @@ interface IProductDefinitionRegistry {
      * @notice Components anchored by a product definition.
      * @param productFactory Exact factory used for product deployment.
      * @param productTermsTemplate Finalized product terms text resource.
-     * @param productDocumentationTemplate Finalized documentation text resource.
      */
     struct ProductDefinition {
         address productFactory;
         address productTermsTemplate;
-        address productDocumentationTemplate;
     }
 
     /**
@@ -74,7 +71,7 @@ interface IProductDefinitionRegistry {
         ProductDefinition productDefinition;
     }
 
-    /// @notice Fixed-size discovery record. Use getProductDefinition for the name and resources.
+    /// @notice Fixed-size discovery record. Use getProductDefinition for the name, factory and terms template.
     struct ProductDefinitionState {
         bytes32 productDefinitionId;
         ProductDefinitionStatus status;
@@ -109,10 +106,10 @@ interface IProductDefinitionRegistry {
     // ------------------------------ Events ------------------------------------- */
 
     /// @notice Emitted when a product definition is published.
-    event ProductDefinitionPublished(bytes32 indexed productDefinitionId, address indexed productFactory, address productTermsTemplate, address productDocumentationTemplate);
+    event ProductDefinitionPublished(bytes32 indexed productDefinitionId, address indexed productFactory, address productTermsTemplate);
 
     /// @notice Emitted when the anchored components are updated.
-    event ProductDefinitionUpdated(bytes32 indexed productDefinitionId, address indexed productFactory, address productTermsTemplate, address productDocumentationTemplate, uint256 version);
+    event ProductDefinitionUpdated(bytes32 indexed productDefinitionId, address indexed productFactory, address productTermsTemplate, uint256 version);
 
     /// @notice Emitted when the lifecycle status changes.
     event ProductDefinitionStatusChanged(bytes32 indexed productDefinitionId, ProductDefinitionStatus oldStatus, ProductDefinitionStatus newStatus);
@@ -131,8 +128,9 @@ interface IProductDefinitionRegistry {
     /// @notice Issues and registers an instance of the selected definition revision.
     /// @dev Only the provider's registered trading contract may initiate issuance.
     ///      The product handles agreement between the trading parties after deployment.
-    function issueProduct(bytes32 productDefinitionId, uint256 expectedVersion, bytes calldata productPayload)
-        external returns (address product);
+    function issueProduct(
+        bytes32 productDefinitionId, uint256 expectedVersion, bytes calldata productPayload
+    ) external returns (address product);
 
     // ------------------------------ Read API ------------------------------ */
 

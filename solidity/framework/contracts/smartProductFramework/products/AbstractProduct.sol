@@ -41,8 +41,13 @@ abstract contract AbstractProduct is IProduct, IXMLRepresentableState {
     uint256 public immutable override productDefinitionVersion;
     /// @inheritdoc IProduct
     address public immutable override productTermsTemplate;
+
+    // ------------------------------ Offer State ------------------------------ */
+
     /// @inheritdoc IProduct
-    address public immutable override productDocumentationTemplate;
+    address public override legalDocumentsManifest;
+    /// @inheritdoc IProduct
+    bytes32 public override legalDocumentsHash;
 
     // ------------------------------ Custom Errors ------------------------------ */
 
@@ -51,6 +56,12 @@ abstract contract AbstractProduct is IProduct, IXMLRepresentableState {
 
     /// @notice Thrown when a required bytes32 value is zero.
     error ZeroHash(string field);
+
+    /// @notice The supplied contract must implement ITextResource and expose a nonzero finalized digest.
+    error InvalidLegalDocumentsManifest(address manifest);
+
+    /// @notice The manifest must be finalized before it can be offered.
+    error ManifestNotFinalized(address manifest);
 
     // ------------------------------ Constructor ------------------------------ */
 
@@ -68,7 +79,17 @@ abstract contract AbstractProduct is IProduct, IXMLRepresentableState {
         productDefinitionId = common.productDefinitionId;
         productDefinitionVersion = common.productDefinitionVersion;
         productTermsTemplate = common.productTermsTemplate;
-        productDocumentationTemplate = common.productDocumentationTemplate;
+    }
+
+    /// @dev The concrete product authorizes the issuer and enforces offer lifecycle transitions.
+    function _setLegalDocuments(address manifest) internal {
+        legalDocumentsHash = ProductLib.manifestHash(manifest);
+        legalDocumentsManifest = manifest;
+    }
+
+    /// @inheritdoc IProduct
+    function legalDocumentsURI() external view override returns (string memory) {
+        return ProductLib.manifestURI(legalDocumentsManifest);
     }
 
     // ------------------------------ XML View ------------------------------ */
@@ -76,7 +97,7 @@ abstract contract AbstractProduct is IProduct, IXMLRepresentableState {
     /// @inheritdoc IXMLRepresentableState
     function stateXmlTemplate() external view override returns (string memory) {
         (string memory name, string memory version) = _productType();
-        return ProductLib.productStateXml(productTermsTemplate, productDocumentationTemplate, name, version);
+        return ProductLib.productStateXml(productTermsTemplate, legalDocumentsManifest, legalDocumentsHash, name, version);
     }
 
     /// @dev Product-type schema identity; independent of a registry's productDefinitionVersion.

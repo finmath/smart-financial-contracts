@@ -4,7 +4,7 @@ import { keccak256, toUtf8Bytes, MaxUint256, ZeroAddress, ZeroHash } from "ether
 import { confirmReviewedClientData } from "./helpers/clientRegistry.js";
 
 describe("Product definitions and per-party trading", function () {
-    let ethers, owner, alice, bob, carol, clients, registry, factory, terms, documentation;
+    let ethers, owner, alice, bob, carol, clients, registry, factory, terms;
     let desks, aliceDesk, bobDesk;
     const LEI = "00000000000000000098";
     const BIC = "DEMOXXXX";
@@ -44,8 +44,6 @@ describe("Product definitions and per-party trading", function () {
         })).deploy(registry.target);
         await factory.waitForDeployment();
         terms = await resource(await factory.productTermsTemplateResourceType(), "application/xml", "<Terms/>");
-        documentation = await resource(await factory.productDocumentationTemplateResourceType(),
-            "application/xslt+xml", '<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="1.0"/>');
         aliceDesk = await onboard(alice);
         bobDesk = await onboard(bob);
     });
@@ -53,8 +51,7 @@ describe("Product definitions and per-party trading", function () {
     function components() {
         return {
             productFactory: factory.target,
-            productTermsTemplate: terms.target,
-            productDocumentationTemplate: documentation.target
+            productTermsTemplate: terms.target
         };
     }
 
@@ -183,8 +180,8 @@ describe("Product definitions and per-party trading", function () {
         expect((await bobDesk.tradeRequestState(id)).status).to.equal(REQUEST.withdrawn);
 
         await bobDesk.setOperator(carol.address, true);
-        const offer = await bobDesk.connect(carol).issueProduct(definition, 1n, "0x");
-        const issued = await eventArgs(offer, registry, "ProductIssued");
+        const issuance = await bobDesk.connect(carol).issueProduct(definition, 1n, "0x");
+        const issued = await eventArgs(issuance, registry, "ProductIssued");
         const product = await ethers.getContractAt("ProductXmlNoteMock", issued.product);
         expect(await product.productProvider()).to.equal(bob.address);
     });
@@ -280,7 +277,9 @@ describe("Product definitions and per-party trading", function () {
         expect(await product.productDefinitionId()).to.equal(definition);
         expect(await product.productDefinitionVersion()).to.equal(1n);
         expect(await product.productTermsTemplate()).to.equal(terms.target);
-        expect(await product.stateXmlTemplate()).to.contain(await terms.web3Url());
+        const issuedXml = await product.stateXmlTemplate();
+        expect(issuedXml).to.contain(await terms.web3Url());
+        expect(issuedXml).not.to.contain("<LegalDocuments");
         expect(await bobDesk.getActiveTradeRequests(definition)).to.deep.equal([]);
         for (const id of [first, second]) {
             const record = await bobDesk.tradeRequestState(id);
@@ -294,6 +293,8 @@ describe("Product definitions and per-party trading", function () {
         expect(await registry.isRegisteredProduct(direct.product)).to.equal(true);
         const directProduct = await ethers.getContractAt("ProductXmlNoteMock", direct.product);
         expect(await directProduct.productProvider()).to.equal(alice.address);
+        expect(await directProduct.productDefinitionVersion()).to.equal(1n);
+        expect((await registry.productDefinitionState(definition)).version).to.equal(1n);
     });
 
     it("caps definition discovery without truncating the final page", async function () {

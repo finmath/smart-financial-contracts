@@ -27,7 +27,7 @@ export function outcomeKeys(label) {
     return { success, failure, successHash: sha256(success), failureHash: sha256(failure) };
 }
 
-async function eventArgs(transaction, contract, name) {
+export async function eventArgs(transaction, contract, name) {
     const receipt = await transaction.wait();
     for (const log of receipt.logs) {
         if (log.address.toLowerCase() !== contract.target.toLowerCase()) continue;
@@ -62,13 +62,11 @@ export async function deployFixedRateBondDemo() {
         { libraries: { ProductLib: productLib.target, FixedRateBondLib: bondLib.target } });
 
     const termsText = '<FixedRateBond demo="true"/>';
-    const documentationText = '<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="1.0"/>';
     async function resource(type, mediaType, text) {
         const content = toUtf8Bytes(text);
         return deploy("TextResource", [issuer.address, type, mediaType, content, keccak256(content)]);
     }
     const termsResource = await resource(await factory.productTermsTemplateResourceType(), "application/xml", termsText);
-    const documentation = await resource(await factory.productDocumentationTemplateResourceType(), "application/xslt+xml", documentationText);
     for (const client of [issuer, buyer]) {
         await clients.registerClient({ client: client.address, lei: "00000000000000000098", bic: "DEMOXXXX" });
         await confirmReviewedClientData(clients, client, "00000000000000000098", "DEMOXXXX");
@@ -80,8 +78,7 @@ export async function deployFixedRateBondDemo() {
     const name = "Fixed-rate bond local demonstration";
     const definitionId = await registry.computeProductDefinitionId(name);
     await registry.connect(operator).publishProductDefinition({ name, productDefinition: {
-        productFactory: factory.target, productTermsTemplate: termsResource.target,
-        productDocumentationTemplate: documentation.target
+        productFactory: factory.target, productTermsTemplate: termsResource.target
     } });
     const terms = {
         buyer: buyer.address, initialAggregateAmount: 30_003n, specifiedDenomination: 10_001n,
@@ -104,6 +101,24 @@ export async function deployFixedRateBondDemo() {
     const issued = await eventArgs(await issuerDesk.issueProductForRequests(
         [requested.tradeRequestId], payload), registry, "ProductIssued");
     const bond = await ethers.getContractAt("FixedRateBond", issued.product);
+
+    const issuanceConditions = await resource(keccak256(toUtf8Bytes("demo:issuance-conditions")), "text/plain",
+        "Coupons and principal are payable in the cash asset specified by this bond.");
+    const manifestText = JSON.stringify({ documents: [{
+        role: "issuance-conditions", mediaType: "text/plain", uri: await issuanceConditions.web3Url(),
+        contentHash: await issuanceConditions.contentHash()
+    }] });
+    const manifest = await resource(keccak256(toUtf8Bytes("demo:legal-manifest")), "application/json", manifestText);
+    const abi = AbiCoder.defaultAbiCoder();
+    const payloadHash = keccak256(abi.encode(["address", "address", TERMS_TYPE, PERIOD_TYPE + "[]"],
+        [bond.target, issuer.address, terms, couponPeriods]));
+    const economicTermsHash = keccak256(abi.encode(["bytes32", "bytes32"],
+        [payloadHash, keccak256(toUtf8Bytes(termsText))]));
+    function agreementHash(manifestHash) {
+        return keccak256(abi.encode(["bytes32", "bytes32", "address", "address"],
+            [economicTermsHash, manifestHash, token.target, payment.target]));
+    }
+    const offeredTermsHash = agreementHash(keccak256(toUtf8Bytes(manifestText)));
     await payment.setProductAuthorized(bond.target, true);
     await cash.transfer(issuer.address, 100_000n);
     await cash.transfer(buyer.address, 100_000n);
@@ -111,11 +126,10 @@ export async function deployFixedRateBondDemo() {
     await cash.connect(buyer).approve(payment.target, 100_000n);
 
     async function agree() {
-        const hash = await bond.termsHash();
-        await bond.connect(issuer).inceptTrade(buyer.address, hash, terms.initialAggregateAmount, 0, "");
-        await bond.connect(buyer).confirmTrade(issuer.address, hash, terms.initialAggregateAmount, 0, "");
+        await bond.connect(issuer).inceptTrade(manifest.target);
+        await bond.connect(buyer).confirmTrade(issuer.address, offeredTermsHash, terms.initialAggregateAmount, 0, "");
     }
     return { ethers, operator, issuer, buyer, outsider, clients, registry, cash, token, payment,
         factory, bondLib, bond, issuerDesk, terms, couponPeriods, definitionId, definitionVersion, requestId: requested.tradeRequestId,
-        termsResource, documentation, agree, payload, requestedTerms };
+        termsResource, issuanceConditions, manifest, agreementHash, offeredTermsHash, agree, payload, requestedTerms };
 }
