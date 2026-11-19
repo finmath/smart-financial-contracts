@@ -1,15 +1,23 @@
 // SPDX-License-Identifier: CC0-1.0
 pragma solidity ^0.8.24;
 
-import {FxAtomicSwap} from "../contracts/FxAtomicSwap.sol";
-import {IERC20RouterToken} from "../contracts/ERC20AtomicSwapSettlementRouter.sol";
+import {FxSpotTrade} from "../contracts/FxSpotTrade.sol";
+import {IERC20RouterToken} from "../contracts/ERC20PvPSettlementRouter.sol";
 
 /// @dev The suite needs only these Foundry cheatcodes; no external test library is required.
 interface Vm {
+    struct Log {
+        bytes32[] topics;
+        bytes data;
+        address emitter;
+    }
+
     function prank(address sender) external;
     function expectRevert(bytes4 selector) external;
     function expectRevert(bytes calldata revertData) external;
     function expectEmit(bool topic1, bool topic2, bool topic3, bool data, address emitter) external;
+    function recordLogs() external;
+    function getRecordedLogs() external returns (Log[] memory);
 }
 
 interface ITransferHook {
@@ -74,31 +82,57 @@ contract ReturnToken is IERC20RouterToken {
 
 /// @dev A genuine counterparty reenters from a token callback while its confirmation is running.
 contract ReentrantCounterparty is ITransferHook {
-    FxAtomicSwap private swap;
+    FxSpotTrade private trade;
     address private inceptor;
     bool public attempted;
     bytes4 public reentryError;
+    bytes4 public inceptionReentryError;
+    bytes4 public cancellationReentryError;
 
     function approve(ReturnToken token, address spender, uint256 amount) external {
         token.approve(spender, amount);
     }
 
-    function confirm(FxAtomicSwap swap_, address inceptor_) external {
-        swap = swap_;
+    function confirm(FxSpotTrade trade_, address inceptor_) external {
+        trade = trade_;
         inceptor = inceptor_;
-        swap.confirmTrade(inceptor, "terms", -100, 200, "settlement");
+        trade.confirmTrade("1", inceptor, address(this), "terms", 100, -200, "settlement");
     }
 
     function onTransfer() external {
         attempted = true;
-        (bool success, bytes memory errorData) = address(swap)
+        (bool success, bytes memory errorData) = address(trade)
             .call(
                 abi.encodeCall(
-                    FxAtomicSwap.confirmTrade, (inceptor, "terms", -100, 200, "settlement")
+                    FxSpotTrade.confirmTrade,
+                    ("1", inceptor, address(this), "terms", 100, -200, "settlement")
                 )
             );
         require(!success, "reentrant confirmation succeeded");
         require(errorData.length >= 4, "missing reentry error");
         reentryError = bytes4(errorData);
+
+        // The counterparty is a legitimate inceptor for a future trade. Even
+        // though trade 1 is already marked Settled, opening trade 2 must wait
+        // until BOTH token legs and terminal events have completed.
+        (success, errorData) = address(trade)
+            .call(
+                abi.encodeCall(
+                    FxSpotTrade.inceptTrade,
+                    (address(this), inceptor, "next terms", 100, -200, "settlement")
+                )
+            );
+        require(!success && errorData.length >= 4, "reentrant inception succeeded");
+        inceptionReentryError = bytes4(errorData);
+
+        (success, errorData) = address(trade)
+            .call(
+                abi.encodeCall(
+                    FxSpotTrade.cancelTrade,
+                    ("1", inceptor, address(this), "terms", 100, -200, "settlement")
+                )
+            );
+        require(!success && errorData.length >= 4, "reentrant cancellation succeeded");
+        cancellationReentryError = bytes4(errorData);
     }
 }

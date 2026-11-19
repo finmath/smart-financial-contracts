@@ -17,7 +17,7 @@ are preserved with browser redirects and unchanged static assets on finmath.net.
   describes operator trust and the single-attempt coupon limit.
 - `solidity/examples/erc8100-products/` runs the original bond and interest-rate-swap
   demos with their original framework and isolated dependencies.
-- `solidity/examples/fx-atomic-swap/` contains the standalone FX demo and walkthrough.
+- `solidity/examples/fx-spot-trade/` contains the standalone FX demo and walkthrough.
 - `solidity/origins/` preserves original framework history and license notices.
 - `solidity/derivatives/` contains the derivative contracts and their Hardhat build.
 - `solidity/ercs/` contains public ERC reference snapshots.
@@ -51,7 +51,7 @@ the standalone demos.
 mvn clean verify
 (cd solidity/framework && npm ci && npm test)
 (cd solidity/examples/erc8100-products && npm ci && forge test)
-(cd solidity/examples/fx-atomic-swap && forge test)
+(cd solidity/examples/fx-spot-trade && forge test)
 (cd frontend && npm ci && npm run build)
 (cd solidity/derivatives && npm ci --ignore-scripts && npm test)
 ```
@@ -63,7 +63,7 @@ Validation of the integrated code:
   fit runtime and initcode limits; the bond factory runtime is 20,181 bytes.
 - Original product demos: 11 factory, registry, representation and lifecycle tests
   passed in their isolated Foundry project.
-- FX atomic swap: 26 Foundry tests passed, including fuzz coverage.
+- FX Spot Trade: 26 Foundry tests passed, including fuzz coverage.
 - Java: 86 tests, no failures or errors, four existing skips.
 - Legacy Solidity: 19 files compiled and all five active tests passed.
 - Frontend: production build and three ChromeHeadless compatibility tests passed

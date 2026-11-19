@@ -26,8 +26,12 @@ contract-size limits remain enabled, including for factory deployment.
    indications, payment adapter and linked libraries. Publish a definition whose
    factory fixes the asset and payment addresses. Request the trade and issue the
    bond through the registry. Authorize the bond in the payment adapter.
-2. The issuer incepts the trade and the buyer confirms the same terms hash. That
-   hash binds the economics, finalized resource hashes, asset and payment contracts.
+2. The issuer incepts the trade with the issuer, buyer, terms hash, negative aggregate
+   nominal position, positive issue-price payment, and initial settlement data. The
+   bond returns and emits its contract-generated trade identifier. The buyer confirms
+   that identifier and the identical inception terms. The terms hash binds the
+   economics, finalized resource hashes, asset and payment contracts. Both calls
+   use the issuer's perspective; confirmation does not reverse the signs.
    Confirmation enables delivery of the already-existing asset.
 3. The issuer approves the asset escrow. The buyer incepts delivery and a matching
    payment. The operator commits two outcome hashes; the bond checks the payment
@@ -40,14 +44,31 @@ contract-size limits remain enabled, including for factory deployment.
    multiplication by the number of units.
 5. At maturity, the issuer requests redemption through `requestTradeTermination`,
    offering the negative redemption amount from the issuer's perspective. The buyer
-   accepts through `confirmTradeTermination`, with the corresponding positive
-   amount and identical terms. Settlement then returns the asset units to the
+   accepts through `confirmTradeTermination`, repeating the trade identifier,
+   requesting issuer, same negative amount, and identical terms. Settlement returns the asset units to the
    issuer against the redemption payment. The existing token supply remains unchanged.
 
 The four agreement states remain separate from `positionState`, which tracks
 delivery, the redemption proposal, authorization to return the units, and repayment.
-Either participant can cancel an unmatched redemption proposal or an accepted
+`inceptTrade` generates the trade identifier from the bond's own address;
+`confirmTrade` and `cancelTrade` take it as their first argument, followed by every
+inception field. `tradeId()` exposes this deterministic identifier even before
+inception. This bond remains single-use: confirmation or cancellation prevents
+another inception. Maturity repayment uses the same identifier in the termination methods.
+The requesting issuer can cancel an unmatched redemption proposal or an accepted
 proposal before an asset attempt is active; a later request starts a new proposal.
+
+All six ERC-6123 trade methods allow a participant's authorized operator to submit
+the action. A participant calls `setTradeOperator(operator, true)` on this bond to
+grant that authority and uses `false` to revoke it. Inception and cancellation
+require issuer authority; confirmation requires buyer authority. Termination
+requests and cancellations require the requesting issuer's authority, while
+termination confirmation requires buyer authority. Events identify those economic
+participants, and all transfers continue between their stored wallets. Token
+allowances and the payment adapter's operator role do not grant trade authority.
+
+These approvals cover the bond's trade methods. Asset settlement, payment and
+coupon calls retain their own participant and callback authorization rules.
 
 ## Components and scope
 
