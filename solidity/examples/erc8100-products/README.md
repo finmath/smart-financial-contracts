@@ -2,8 +2,9 @@
 
 This standalone Foundry project runs the original Smart Product Framework
 `SimpleBond` and `InterestRateSwap` examples from `representable-contract-state`.
-The 20 Solidity source files and four XML/XSLT resources are copied unchanged
+The 20 Solidity source files and four XML/XSLT resources are copied
 from the retained original framework sources, with their licenses and notices.
+Text-resource chunk events index the sender, storage pointer and chunk index.
 
 `SimpleBond` demonstrates negotiated notional and maturity. `InterestRateSwap`
 adds currency, fixed-rate payer/receiver roles and forward/discount curve symbols.

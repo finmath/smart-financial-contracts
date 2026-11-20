@@ -66,6 +66,10 @@ The original product demos use their original framework interfaces and an isolat
 OpenZeppelin dependency. They are tested separately from the maintained core package.
 The general ERC-8100 renderer remains a separate project and service.
 
+Text-resource `ChunkAppended` events index the sender, storage pointer and chunk
+index for log filtering; the chunk length remains in the event data. Event decoders
+must use the ABI of the deployed resource.
+
 Use `getActiveTradeRequests` for a definition's active requests,
 `tradeRequestState` for a known request, and `isRegisteredProduct` to verify an
 issued contract. Index the registry events for historical discovery.
