@@ -23,25 +23,25 @@ interface ISDCTrade {
      * @param paymentAmount Signed payment from the inceptor's perspective.
      * @param initialSettlementData The immutable initial settlement data.
      */
-    event TradeIncepted(address initiator, address withParty, string tradeId, string tradeData, int256 position, int256 paymentAmount, string initialSettlementData);
+    event TradeIncepted(address indexed initiator, address indexed withParty, string tradeId, string tradeData, int256 position, int256 paymentAmount, string initialSettlementData);
 
     /// @notice The represented counterparty confirmed the stored inception.
-    event TradeConfirmed(address confirmer, string tradeId);
+    event TradeConfirmed(address indexed confirmer, string tradeId);
 
     /// @notice The represented inceptor canceled the unconfirmed trade.
-    event TradeCanceled(address initiator, string tradeId);
+    event TradeCanceled(address indexed initiator, string tradeId);
 
     event TradeActivated(string tradeId);
     event TradeTerminated(string tradeId, string cause);
 
     /// @notice A represented participant requested termination; payment uses its perspective.
-    event TradeTerminationRequest(address initiator, string tradeId, int256 terminationPayment, string terminationTerms);
+    event TradeTerminationRequest(address indexed initiator, string tradeId, int256 terminationPayment, string terminationTerms);
 
     /// @notice The opposite participant confirmed; payment retains the requester's perspective.
-    event TradeTerminationConfirmed(address confirmer, string tradeId, int256 terminationPayment, string terminationTerms);
+    event TradeTerminationConfirmed(address indexed confirmer, string tradeId, int256 terminationPayment, string terminationTerms);
 
     /// @notice The represented requester withdrew its termination proposal.
-    event TradeTerminationCanceled(address initiator, string tradeId, string terminationTerms);
+    event TradeTerminationCanceled(address indexed initiator, string tradeId, string terminationTerms);
 
     /**
      * @notice Incepts a trade for the explicit parties and stores its immutable terms.

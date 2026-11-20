@@ -28,17 +28,17 @@ contract FxSpotTradeTest {
     FxSpotTrade private trade;
 
     event TradeIncepted(
-        address initiator,
-        address withParty,
+        address indexed initiator,
+        address indexed withParty,
         string tradeId,
         string tradeData,
         int256 position,
         int256 paymentAmount,
         string initialSettlementData
     );
-    event TradeConfirmed(address confirmer, string tradeId);
+    event TradeConfirmed(address indexed confirmer, string tradeId);
     event TradeTerminated(string tradeId, string cause);
-    event TradeCanceled(address initiator, string tradeId);
+    event TradeCanceled(address indexed initiator, string tradeId);
 
     function setUp() public {
         factory = new FxSpotTradeFactory();
@@ -98,7 +98,7 @@ contract FxSpotTradeTest {
     }
 
     function testInceptionStoresExactTermsAndEmitsEvent() public {
-        vm.expectEmit(false, false, false, true, address(trade));
+        vm.expectEmit(true, true, false, true, address(trade));
         emit TradeIncepted(PARTY_A, PARTY_B, "1", "terms", POSITION, PAYMENT, "settlement");
         _incept();
         require(trade.phase() == FxSpotTrade.Phase.Incepted, "phase");
@@ -111,7 +111,7 @@ contract FxSpotTradeTest {
 
     function testConfirmationSettlesExactlyAndEmitsTerminalEvents() public {
         _incept();
-        vm.expectEmit(false, false, false, true, address(trade));
+        vm.expectEmit(true, false, false, true, address(trade));
         emit TradeConfirmed(PARTY_B, "1");
         vm.expectEmit(false, false, false, true, address(trade));
         emit TradeTerminated("1", "atomic settlement completed");
@@ -170,12 +170,12 @@ contract FxSpotTradeTest {
         vm.prank(PARTY_B);
         trade.setTradeOperator(confirmationOperator, true);
 
-        vm.expectEmit(false, false, false, true, address(trade));
+        vm.expectEmit(true, true, false, true, address(trade));
         emit TradeIncepted(PARTY_A, PARTY_B, "1", "terms", POSITION, PAYMENT, "settlement");
         vm.prank(OUTSIDER);
         trade.inceptTrade(PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
         require(trade.inceptor() == PARTY_A, "operator became inceptor");
-        vm.expectEmit(false, false, false, true, address(trade));
+        vm.expectEmit(true, false, false, true, address(trade));
         emit TradeConfirmed(PARTY_B, "1");
         vm.prank(confirmationOperator);
         trade.confirmTrade("1", PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
@@ -197,7 +197,7 @@ contract FxSpotTradeTest {
         _incept();
         vm.prank(PARTY_A);
         trade.setTradeOperator(OUTSIDER, true);
-        vm.expectEmit(false, false, false, true, address(trade));
+        vm.expectEmit(true, false, false, true, address(trade));
         emit TradeCanceled(PARTY_A, "1");
         vm.prank(OUTSIDER);
         trade.cancelTrade("1", PARTY_A, PARTY_B, "terms", POSITION, PAYMENT, "settlement");
@@ -272,7 +272,7 @@ contract FxSpotTradeTest {
 
     function testCancellationConsumesTradeWithoutSpending() public {
         _incept();
-        vm.expectEmit(false, false, false, true, address(trade));
+        vm.expectEmit(true, false, false, true, address(trade));
         emit TradeCanceled(PARTY_A, "1");
         _cancel();
         require(trade.phase() == FxSpotTrade.Phase.Canceled, "phase");
