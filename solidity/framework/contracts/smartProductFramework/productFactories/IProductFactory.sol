@@ -10,8 +10,8 @@ import {ProductDeploymentParams} from "./ProductDeploymentTypes.sol";
  * @notice Interface for a factory defining and deploying one product specification.
  *
  * @dev A product definition anchors the exact factory used for deployment.
- *      The factory provides the expected payload schema, required resource
- *      types, accepted indication categories, and product deployment.
+ *      The factory provides the expected payload schema, the terms template's
+ *      resource type, accepted indication categories, and product deployment.
  *
  * @author Raphael Prandtl
  */
@@ -33,9 +33,6 @@ interface IProductFactory is IERC165 {
 
     /// @notice Returns the required resource type of the product terms template.
     function productTermsTemplateResourceType() external view returns (bytes32);
-
-    /// @notice Returns the required resource type of the product documentation template.
-    function productDocumentationTemplateResourceType() external view returns (bytes32);
 
     // ------------------------------ Product Indication ------------------------------ */
 

@@ -2,6 +2,7 @@
 pragma solidity ^0.8.24;
 
 import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
+import {ERC165Checker} from "@openzeppelin/contracts/utils/introspection/ERC165Checker.sol";
 import {LibString} from "solady/src/utils/LibString.sol";
 import {CommonDeploymentParams} from "../productFactories/ProductDeploymentTypes.sol";
 import {ITextResource} from "../../erc8100/ITextResource.sol";
@@ -22,6 +23,8 @@ library ProductLib {
     /// @dev Same selectors as AbstractProduct; validation stays in the constructor's delegatecall.
     error ZeroAddress(string field);
     error ZeroHash(string field);
+    error InvalidLegalDocumentsManifest(address manifest);
+    error ManifestNotFinalized(address manifest);
 
     function validateDeploymentContext(CommonDeploymentParams memory common) external pure {
         if (common.productRegistry == address(0)) {
@@ -36,30 +39,43 @@ library ProductLib {
         if (common.productTermsTemplate == address(0)) {
             revert ZeroAddress("productTermsTemplate");
         }
-        if (common.productDocumentationTemplate == address(0)) {
-            revert ZeroAddress("productDocumentationTemplate");
-        }
+    }
 
+    /// @notice Reads the digest from a finalized on-chain manifest at offer time.
+    function manifestHash(address manifest) external view returns (bytes32 digest) {
+        if (!ERC165Checker.supportsInterface(manifest, type(ITextResource).interfaceId)) {
+            revert InvalidLegalDocumentsManifest(manifest);
+        }
+        ITextResource resource = ITextResource(manifest);
+        if (!resource.isFinalized()) revert ManifestNotFinalized(manifest);
+        digest = resource.contentHash();
+        if (digest == bytes32(0)) revert InvalidLegalDocumentsManifest(manifest);
+    }
+
+    /// @notice Canonical content locator for the offered manifest on this chain.
+    function manifestURI(address manifest) public view returns (string memory) {
+        if (manifest == address(0)) return "";
+        return string.concat("web3://", Strings.toHexString(manifest), ":", block.chainid.toString(), "/content");
     }
 
     /**
      * @notice Builds the common SmartFinancialProduct XML envelope.
-     * @dev ICMA BDT 2.1.0 and XSLT 1.0 are the current shared resource profile.
-     *      These schema constants are not exposed by ITextResource. Media types,
-     *      URLs and integrity hashes are read from the immutable resources.
+     * @dev The definition pins the ICMA BDT terms template. An offer adds the
+     *      legal manifest address and the digest observed when the offer was made.
      */
     function productStateXml(
         address termsTemplate,
-        address documentationTemplate,
+        address manifest,
+        bytes32 legalDocumentsHash,
         string memory productType,
         string memory typeVersion
     ) external view returns (string memory) {
         return string.concat(
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
-            "<SmartFinancialProduct xmlns=\"urn:smart-product-framework:financial-product:1.0\"",
+            "<SmartFinancialProduct xmlns=\"urn:smart-product-framework:financial-product:2.0\"",
             " xmlns:xi=\"http://www.w3.org/2001/XInclude\"",
             " xmlns:evmstate=\"urn:evm:state:1.0\"",
-            " schemaVersion=\"1.0.0\"",
+            " schemaVersion=\"2.0.0\"",
             " type=\"", LibString.escapeHTML(productType),
             "\" typeVersion=\"", LibString.escapeHTML(typeVersion), "\">",
             _deploymentStateXml(),
@@ -70,12 +86,8 @@ library ProductLib {
             _mediaTypeAttribute(ITextResource(termsTemplate)), ">",
             _include(ITextResource(termsTemplate)),
             "</ProductTermsTemplate>",
-            "<ProductDocumentationTemplate type=\"XSLT\"",
-            " formatVersion=\"1.0\"",
-            _mediaTypeAttribute(ITextResource(documentationTemplate)),
-            _resourceReference(ITextResource(documentationTemplate)),
-            "/></ProductResources>",
-            "</SmartFinancialProduct>"
+            _legalDocumentsXml(manifest, legalDocumentsHash),
+            "</ProductResources></SmartFinancialProduct>"
         );
     }
 
@@ -94,16 +106,39 @@ library ProductLib {
         );
     }
 
-    /// @notice Parses a 0x-prefixed 32-byte trade-data hash.
-    function parseHash(string memory s) external pure returns (bytes32 result) {
+    /// @notice Reads a lowercase, 0x-prefixed ABI encoding of (address, bytes32).
+    function decodeOfferData(string memory data) external pure returns (address manifest, bytes32 agreementHash) {
+        bytes memory hexData = bytes(data);
+        if (hexData.length != 130 || hexData[0] != "0" || hexData[1] != "x") revert InvalidTradeData();
+        uint256 addressWord = _parseDigits(hexData, 2, 66, false);
+        if (addressWord > type(uint160).max) revert InvalidTradeData();
+        return (address(uint160(addressWord)), bytes32(_parseDigits(hexData, 66, 130, false)));
+    }
+
+    /// @notice Parses a 0x-prefixed 32-byte hash.
+    function parseHash(string memory s) external pure returns (bytes32) {
+        return bytes32(_parseHex(s, 32));
+    }
+
+    /// @notice Parses a 0x-prefixed 20-byte address.
+    function parseManifestAddress(string memory s) external pure returns (address) {
+        return address(uint160(_parseHex(s, 20)));
+    }
+
+    function _parseHex(string memory s, uint256 byteLength) private pure returns (uint256) {
         bytes memory b = bytes(s);
-        if (b.length != 66 || b[0] != "0" || b[1] != "x") revert InvalidTradeData();
-        for (uint256 i = 0; i < 32; ) {
-            result |= bytes32(
-                uint256(_hexVal(b[2 + i * 2]) * 16 + _hexVal(b[3 + i * 2]))
-                << (8 * (31 - i))
-            );
-            unchecked { ++i; }
+        if (b.length != 2 + byteLength * 2 || b[0] != "0" || b[1] != "x") revert InvalidTradeData();
+        return _parseDigits(b, 2, b.length, true);
+    }
+
+    function _parseDigits(bytes memory b, uint256 start, uint256 end, bool allowUppercase) private pure returns (uint256 value) {
+        for (uint256 i = start; i < end; ++i) {
+            uint8 digit = uint8(b[i]);
+            if (digit >= 48 && digit <= 57) digit -= 48;
+            else if (digit >= 97 && digit <= 102) digit -= 87;
+            else if (allowUppercase && digit >= 65 && digit <= 70) digit -= 55;
+            else revert InvalidTradeData();
+            value = (value << 4) | digit;
         }
     }
 
@@ -128,26 +163,17 @@ library ProductLib {
     function _include(ITextResource resource) private view returns (string memory) {
         return string.concat(
             "<xi:include href=\"", LibString.escapeHTML(resource.web3Url()),
-            "\" parse=\"xml\" evmstate:integrity=\"", _integrity(resource), "\"/>"
+            "\" parse=\"xml\" evmstate:integrity=\"", _integrity(resource.contentHash()), "\"/>"
         );
     }
 
-    function _resourceReference(ITextResource resource) private view returns (string memory) {
-        return string.concat(
-            " href=\"", LibString.escapeHTML(resource.web3Url()),
-            "\" integrity=\"", _integrity(resource), "\""
-        );
+    function _integrity(bytes32 contentHash) private pure returns (string memory) {
+        return string.concat("keccak256-", uint256(contentHash).toHexString(32));
     }
 
-    function _integrity(ITextResource resource) private view returns (string memory) {
-        return string.concat("keccak256-", uint256(resource.contentHash()).toHexString(32));
+    function _legalDocumentsXml(address manifest, bytes32 digest) private view returns (string memory) {
+        if (manifest == address(0)) return "";
+        return string.concat('<LegalDocuments href="', manifestURI(manifest), '" integrity="', _integrity(digest), '"/>');
     }
 
-    function _hexVal(bytes1 c) private pure returns (uint8) {
-        uint8 v = uint8(c);
-        if (v >= 48 && v <= 57) return v - 48;
-        if (v >= 97 && v <= 102) return v - 87;
-        if (v >= 65 && v <= 70) return v - 55;
-        revert InvalidTradeData();
-    }
 }
