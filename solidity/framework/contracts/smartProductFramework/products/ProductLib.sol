@@ -106,21 +106,44 @@ library ProductLib {
         );
     }
 
-    /// @notice Parses a 0x-prefixed 32-byte trade-data hash.
+    /// @notice Canonical tradeData for a bond offer, repeated unchanged through the ERC-6123 lifecycle.
+    function encodeOfferData(address manifest, bytes32 agreementHash) external pure returns (string memory) {
+        return LibString.toHexString(abi.encode(manifest, agreementHash));
+    }
+
+    /// @notice Reads a lowercase, 0x-prefixed ABI encoding of (address, bytes32).
+    function decodeOfferData(string memory data) external pure returns (address manifest, bytes32 agreementHash) {
+        bytes memory hexData = bytes(data);
+        if (hexData.length != 130 || hexData[0] != "0" || hexData[1] != "x") revert InvalidTradeData();
+        uint256 addressWord = _parseDigits(hexData, 2, 66, false);
+        if (addressWord > type(uint160).max) revert InvalidTradeData();
+        return (address(uint160(addressWord)), bytes32(_parseDigits(hexData, 66, 130, false)));
+    }
+
+    /// @notice Parses a 0x-prefixed 32-byte hash.
     function parseHash(string memory s) external pure returns (bytes32) {
         return bytes32(_parseHex(s, 32));
     }
 
-    /// @notice Parses the 0x-prefixed 20-byte manifest address in ISDCTrade tradeData.
+    /// @notice Parses a 0x-prefixed 20-byte address.
     function parseManifestAddress(string memory s) external pure returns (address) {
         return address(uint160(_parseHex(s, 20)));
     }
 
-    function _parseHex(string memory s, uint256 byteLength) private pure returns (uint256 result) {
+    function _parseHex(string memory s, uint256 byteLength) private pure returns (uint256) {
         bytes memory b = bytes(s);
         if (b.length != 2 + byteLength * 2 || b[0] != "0" || b[1] != "x") revert InvalidTradeData();
-        for (uint256 i = 2; i < b.length; ++i) {
-            result = (result << 4) | _hexVal(b[i]);
+        return _parseDigits(b, 2, b.length, true);
+    }
+
+    function _parseDigits(bytes memory b, uint256 start, uint256 end, bool allowUppercase) private pure returns (uint256 value) {
+        for (uint256 i = start; i < end; ++i) {
+            uint8 digit = uint8(b[i]);
+            if (digit >= 48 && digit <= 57) digit -= 48;
+            else if (digit >= 97 && digit <= 102) digit -= 87;
+            else if (allowUppercase && digit >= 65 && digit <= 70) digit -= 55;
+            else revert InvalidTradeData();
+            value = (value << 4) | digit;
         }
     }
 
@@ -158,11 +181,4 @@ library ProductLib {
         return string.concat('<LegalDocuments href="', manifestURI(manifest), '" integrity="', _integrity(digest), '"/>');
     }
 
-    function _hexVal(bytes1 c) private pure returns (uint8) {
-        uint8 v = uint8(c);
-        if (v >= 48 && v <= 57) return v - 48;
-        if (v >= 97 && v <= 102) return v - 87;
-        if (v >= 65 && v <= 70) return v - 55;
-        revert InvalidTradeData();
-    }
 }

@@ -16,6 +16,10 @@ export function encodeBondPayload(terms, couponPeriods) {
     );
 }
 
+export function encodeBondTradeData(manifest, reviewedHash) {
+    return AbiCoder.defaultAbiCoder().encode(["address", "bytes32"], [manifest, reviewedHash]);
+}
+
 export async function advanceTo(ethers, timestamp) {
     await ethers.provider.send("evm_setNextBlockTimestamp", [Number(timestamp)]);
     await ethers.provider.send("evm_mine", []);
@@ -125,11 +129,17 @@ export async function deployFixedRateBondDemo() {
     await cash.connect(issuer).approve(payment.target, 100_000n);
     await cash.connect(buyer).approve(payment.target, 100_000n);
 
+    // Confirmation and cancellation repeat the original offer, prefixed with its generated ID.
+    async function tradeArguments(initialSettlementData = "") {
+        const tradeData = encodeBondTradeData(manifest.target, offeredTermsHash);
+        return [await bond.tradeId(), issuer.address, buyer.address, tradeData,
+            -terms.initialAggregateAmount, await bond.settlementAmount(), initialSettlementData];
+    }
     async function agree() {
         await bond.connect(issuer).inceptTrade(manifest.target);
-        await bond.connect(buyer).confirmTrade(issuer.address, offeredTermsHash, terms.initialAggregateAmount, 0, "");
+        await bond.connect(buyer).confirmTrade(...await tradeArguments());
     }
     return { ethers, operator, issuer, buyer, outsider, clients, registry, cash, token, payment,
         factory, bondLib, bond, issuerDesk, terms, couponPeriods, definitionId, definitionVersion, requestId: requested.tradeRequestId,
-        termsResource, issuanceConditions, manifest, agreementHash, offeredTermsHash, agree, payload, requestedTerms };
+        termsResource, issuanceConditions, manifest, agreementHash, offeredTermsHash, agree, tradeArguments, payload, requestedTerms };
 }

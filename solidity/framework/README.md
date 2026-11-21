@@ -4,7 +4,7 @@ This directory contains the Smart Product Framework and demo implementations
 originally distributed through the ERC-8100 repository
 (`representable-contract-state`). The maintained core includes product definitions,
 factories, client approval, indications, XML representation and settlement helpers.
-The original bond and interest-rate-swap demos and the FX atomic swap demo have
+The original bond and interest-rate-swap demos and the FX Spot Trade demo have
 separate Foundry projects.
 The maintained [fixed-rate bond example](contracts/examples/fixedRateBond/README.md)
 runs with the core Hardhat tests and uses an existing ERC-20 asset and a local
@@ -26,6 +26,10 @@ The lockfile pins dependencies. Hardhat downloads the Solidity compilers on the
 first build. Tests use an isolated chain with normal deployment-size limits and
 require no RPC endpoint, wallet or deployment configuration.
 
+The fixed-rate bond imports `ISDCTrade` through the local `@finmath.net/sdc`
+dependency at [`../ercs/erc-6123/`](../ercs/erc-6123/README.md). Interface changes
+there are therefore checked by the framework build and lifecycle tests.
+
 Run the original product demos with Node.js and Foundry:
 
 ```sh
@@ -34,10 +38,10 @@ npm ci
 forge test
 ```
 
-The independent [FX atomic swap demo](../examples/fx-atomic-swap/README.md) needs Foundry:
+The independent [FX Spot Trade demo](../examples/fx-spot-trade/README.md) needs Foundry:
 
 ```sh
-cd solidity/examples/fx-atomic-swap
+cd solidity/examples/fx-spot-trade
 forge test
 ```
 
@@ -54,13 +58,17 @@ Their existing source copies in `representable-contract-state` remain available.
 | [`contracts/examples/fixedRateBond/`](contracts/examples/fixedRateBond/README.md) | FixedRateBond, its library and factory, with local demo adapters |
 | `contracts/mocks/`, `test/` | Core framework, representation and settlement regression tests |
 | [`../examples/erc8100-products/`](../examples/erc8100-products/README.md) | Original bond and interest-rate-swap framework demos, with their own dependencies and tests |
-| [`../examples/fx-atomic-swap/`](../examples/fx-atomic-swap/README.md) | FX atomic swap contracts, tests and renderer walkthrough |
+| [`../examples/fx-spot-trade/`](../examples/fx-spot-trade/README.md) | FX Spot Trade contracts, tests and renderer walkthrough |
 | `../origins/representable-contract-state/` | Original extracted source history and reference material |
 | `../origins/product-framework/` | Retained source license |
 
 The original product demos use their original framework interfaces and an isolated
 OpenZeppelin dependency. They are tested separately from the maintained core package.
 The general ERC-8100 renderer remains a separate project and service.
+
+Text-resource `ChunkAppended` events index the sender, storage pointer and chunk
+index for log filtering. The chunk length is in the event data. Event decoders
+must use the ABI of the deployed resource.
 
 ## Trading between parties
 
@@ -98,7 +106,8 @@ The following workflow shows a buyer approaching an issuer.
    request points to this instance. A newly created bond is still `Inactive`.
 4. To make an offer, the issuer calls `inceptTrade(manifestAddress)` on the bond.
    The buyer reviews the offered documents and economics, then calls
-   `confirmTrade` with their combined hash. Confirmation enables delivery.
+   `confirmTrade` with the offer ID and the exact inception fields, including
+   the reviewed agreement hash. Confirmation enables delivery.
 
 Use `registry.isRegisteredProduct(product)` to verify provenance. Index trading
 contract events for request history and registry events for definitions and issues.
@@ -125,18 +134,23 @@ referenced in those bytes.
 
 The issuer's offer and the buyer's confirmation use the same
 `keccak256(abi.encode(economicTermsHash, legalDocumentsHash, assetToken, paymentContract))`.
-While the offer is open the issuer can replace the manifest. If its content
-changes, the buyer must submit the new hash. Once confirmed, the agreed
-manifest is fixed. Before the first offer the product reports a zero manifest
-address and hash. The [v2 product XML envelope](resources/smart-financial-product-envelope-v2.xsd)
+While an offer is open the issuer can call `inceptTrade(manifestAddress)` with
+a different manifest. The bond withdraws the old offer and emits a fresh trade
+ID. The buyer must review the new offer and confirm its ID, even if the
+document bytes match an earlier offer. Once confirmed, the agreed manifest is
+fixed. Before the first offer the product reports a zero manifest address
+and hash. The [v2 product XML envelope](resources/smart-financial-product-envelope-v2.xsd)
 includes `LegalDocuments` with `href` and `integrity` once the issuer selects a manifest.
 
-Integrations using the five-argument `ISDCTrade.inceptTrade` pass the manifest
-address as a `0x`-prefixed, 40-digit hex string in `tradeData`. The resulting
-`TradeIncepted` event carries the combined agreement hash in its `tradeData`
-field. After verifying that hash, the buyer supplies it as a `0x`-prefixed,
-64-digit hex string in `ISDCTrade.confirmTrade`. Use the updated ABI when
-connecting to new deployments.
+For the six-argument ERC-6123 `inceptTrade`, encode the manifest address and
+the reviewed agreement hash together in `tradeData` using the lowercase hex
+string returned by ethers' `AbiCoder.defaultAbiCoder().encode(["address", "bytes32"], [manifestAddress, agreementHash])`.
+The issuer is the inceptor. Its position is the negative aggregate nominal
+amount and its payment is the positive issue-price proceeds. `TradeIncepted`
+emits the generated ID and the original fields. Use them unchanged for
+`confirmTrade` or `cancelTrade`, including the settlement data. The issuer can
+authorize an operator on the bond to offer or withdraw. The buyer can authorize
+an operator on the same bond to confirm.
 
 ## History and licensing
 
