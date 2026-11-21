@@ -55,7 +55,7 @@ contract FixedRateBond is FixedRateBondConventions, AbstractProduct, DemoAssetLo
         Incepted,
         /// @dev Buyer confirmed; the trade is binding.
         Confirmed,
-        /// @dev Cancelled before confirmation (terminal).
+        /// @dev The issuer withdrew the last offer. A new inception receives a fresh ID.
         Cancelled
     }
 
@@ -137,7 +137,7 @@ contract FixedRateBond is FixedRateBondConventions, AbstractProduct, DemoAssetLo
     /// @notice Contractual maturity as a Unix timestamp; set only during construction.
     uint64 public maturityDate;
 
-    /// @notice Latest issuer offer, frozen upon confirmation or cancellation. Zero before inception.
+    /// @notice Hash of the latest offer. Zero before inception and fixed after confirmation.
     bytes32 public agreedTermsHash;
 
     /// @notice Commitment to the complete tuple for the current ERC-6123 trade ID.
@@ -245,53 +245,31 @@ contract FixedRateBond is FixedRateBondConventions, AbstractProduct, DemoAssetLo
 
     // ------------------------------ Trade Lifecycle ------------------------------ */
 
-    /// @notice Offer the bond with a finalized legal manifest and empty initial settlement data.
-    /// @dev Selecting a different manifest while an offer is open atomically withdraws that
-    ///      offer and creates a new ERC-6123 inception with a fresh identifier.
-    function inceptTrade(address manifest) external nonReentrant returns (string memory) {
-        _requireTradeAuthorization(issuer);
-        if (tradeStatus == TradeStatus.Incepted && manifest != legalDocumentsManifest) {
-            _cancelOffer();
-            ++_replacementCount;
-        } else if (tradeStatus != TradeStatus.Inactive) {
-            revert InvalidTradeStatus(tradeStatus);
-        }
-
-        (int256 position, int256 paymentAmount) = _tradeAmounts();
-        _selectManifest(manifest);
-        string memory tradeData = ProductLib.encodeOfferData(manifest, agreedTermsHash);
-        return _recordInception(tradeData, position, paymentAmount, "");
-    }
-
     /**
      * @inheritdoc ISDCTrade
      * @dev tradeData is lowercase, 0x-prefixed hex of abi.encode(manifest, agreementHash).
      *      Both signed amounts use the issuer's perspective. Each field, including the
      *      opaque initial settlement data, is repeated exactly at confirmation or cancellation.
+     *      After cancellation the issuer can propose new terms under a fresh trade ID.
      */
     function inceptTrade(
         address inceptor, address counterparty, string memory tradeData,
         int256 position, int256 paymentAmount, string memory initialSettlementData
-    ) external override inTradeStatus(TradeStatus.Inactive) nonReentrant returns (string memory) {
+    ) external override nonReentrant returns (string memory id) {
+        if (tradeStatus != TradeStatus.Inactive && tradeStatus != TradeStatus.Cancelled) {
+            revert InvalidTradeStatus(tradeStatus);
+        }
         _requireTradeAuthorization(issuer);
         _requireTradeEconomics(inceptor, counterparty, position, paymentAmount);
-        (address manifest, bytes32 supplied) = ProductLib.decodeOfferData(tradeData);
-        _selectManifest(manifest);
-        if (supplied != agreedTermsHash) revert TermsMismatch(agreedTermsHash, supplied);
-        return _recordInception(tradeData, position, paymentAmount, initialSettlementData);
-    }
-
-    function _selectManifest(address manifest) private {
-        _setLegalDocuments(manifest);
-        agreedTermsHash = keccak256(abi.encode(economicTermsHash, legalDocumentsHash, assetToken, paymentContract));
-    }
-
-    function _recordInception(string memory tradeData, int256 position, int256 paymentAmount, string memory initialSettlementData)
-        private returns (string memory id)
-    {
         if (!IClientRegistry(clientRegistry).isEligibleClient(buyer, productDefinitionId)) {
             revert BuyerNotEligible(buyer);
         }
+        (address manifest, bytes32 supplied) = ProductLib.decodeOfferData(tradeData);
+        _setLegalDocuments(manifest);
+        agreedTermsHash = keccak256(abi.encode(economicTermsHash, legalDocumentsHash, assetToken, paymentContract));
+        if (supplied != agreedTermsHash) revert TermsMismatch(agreedTermsHash, supplied);
+
+        if (tradeStatus == TradeStatus.Cancelled) ++_replacementCount;
         id = tradeId();
         tradeInception = _tradeCommitment(id, issuer, buyer, tradeData, position, paymentAmount, initialSettlementData);
         _setTradeStatus(TradeStatus.Incepted);
@@ -317,8 +295,7 @@ contract FixedRateBond is FixedRateBondConventions, AbstractProduct, DemoAssetLo
 
     /**
      * @inheritdoc ISDCTrade
-     * @dev The issuer or its operator withdraws the exact pending offer. Cancellation
-     *      is terminal and leaves both parties' assets untouched.
+     * @dev The issuer or its operator withdraws the exact pending offer, permanently closing its ID.
      */
     function cancelTrade(
         string memory tradeId_, address inceptor, address counterparty, string memory tradeData,
@@ -326,10 +303,6 @@ contract FixedRateBond is FixedRateBondConventions, AbstractProduct, DemoAssetLo
     ) external override inTradeStatus(TradeStatus.Incepted) {
         _requireTradeAuthorization(issuer);
         _requireTradeTerms(tradeId_, inceptor, counterparty, tradeData, position, paymentAmount, initialSettlementData);
-        _cancelOffer();
-    }
-
-    function _cancelOffer() private {
         _setTradeStatus(TradeStatus.Cancelled);
         emit TradeCanceled(issuer, tradeId());
     }
@@ -339,14 +312,9 @@ contract FixedRateBond is FixedRateBondConventions, AbstractProduct, DemoAssetLo
     ) private view {
         if (inceptor != issuer) revert InvalidCounterparty(inceptor);
         if (counterparty != buyer) revert InvalidCounterparty(counterparty);
-        (int256 expectedPosition, int256 expectedPayment) = _tradeAmounts();
-        if (position != expectedPosition || paymentAmount != expectedPayment) revert InvalidAmount();
-    }
-
-    function _tradeAmounts() private view returns (int256 position, int256 paymentAmount) {
         uint256 payment = settlementAmount();
-        if (initialAggregateAmount > uint256(type(int256).max) || payment > uint256(type(int256).max)) revert InvalidAmount();
-        return (-int256(initialAggregateAmount), int256(payment));
+        if (initialAggregateAmount > uint256(type(int256).max) || payment > uint256(type(int256).max)
+            || position != -int256(initialAggregateAmount) || paymentAmount != int256(payment)) revert InvalidAmount();
     }
 
     function _requireTradeTerms(

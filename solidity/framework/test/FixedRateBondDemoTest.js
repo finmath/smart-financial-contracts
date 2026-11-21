@@ -113,7 +113,7 @@ describe("FixedRateBond with local demo integrations", function () {
 
         await advanceTo(ethers, DEMO_DATES.settlement);
         const args = await f.tradeArguments();
-        await expect(bond.connect(issuer).inceptTrade(manifest.target))
+        await expect(bond.connect(issuer).inceptTrade(...args.slice(1)))
             .to.emit(bond, "TradeIncepted").withArgs(issuer.address, buyer.address, args[0], ...args.slice(3));
         expect(await bond.tradeStatus()).to.equal(TRADE.incepted);
         expect(await bond.legalDocumentsManifest()).to.equal(manifest.target);
@@ -167,13 +167,13 @@ describe("FixedRateBond with local demo integrations", function () {
     it("requires the right parties and every inception field before enabling settlement", async function () {
         const { issuer, buyer, outsider, bond, token, manifest } = f;
         const args = await f.tradeArguments("initial market data");
+        expect(bond.interface.getFunction("inceptTrade").format())
+            .to.equal("inceptTrade(address,address,string,int256,int256,string)");
         await expect(bond.connect(outsider).inceptTrade(...args.slice(1)))
             .to.be.revertedWithCustomError(bond, "UnauthorizedTradeCaller")
             .withArgs(outsider.address, issuer.address);
         expect(await bond.tradeId()).to.equal(bond.target.toLowerCase());
         expect(await bond.tradeStatus()).to.equal(TRADE.inactive);
-        await expect(bond.connect(outsider).inceptTrade(manifest.target))
-            .to.be.revertedWithCustomError(bond, "UnauthorizedTradeCaller").withArgs(outsider.address, issuer.address);
         await expect(bond.connect(buyer).confirmTrade(...args))
             .to.be.revertedWithCustomError(bond, "InvalidTradeStatus");
         const manifestHash = await manifest.contentHash();
@@ -233,21 +233,19 @@ describe("FixedRateBond with local demo integrations", function () {
             .to.be.revertedWithCustomError(bond, "InvalidTradeStatus");
         await expect(bond.connect(buyer).confirmTrade(...args))
             .to.be.revertedWithCustomError(bond, "InvalidTradeStatus");
-        await expect(bond.connect(issuer).inceptTrade(manifest.target))
-            .to.be.revertedWithCustomError(bond, "InvalidTradeStatus");
     });
 
-    it("revises an offer only with finalized documents and requires confirmation of the current content", async function () {
+    it("requires cancellation before a new offer and a fresh confirmation for each trade ID", async function () {
         const { ethers, issuer, buyer, outsider, bond, manifest } = f;
         const offeredBond = bond.connect(issuer);
+        const first = await f.tradeArguments();
         for (const address of [ZeroAddress, issuer.address, f.token.target]) {
-            await expect(offeredBond.inceptTrade(address))
+            const data = encodeBondTradeData(address, f.offeredTermsHash);
+            await expect(offeredBond.inceptTrade(issuer.address, buyer.address, data, ...first.slice(4)))
                 .to.be.revertedWithCustomError(bond, "InvalidLegalDocumentsManifest").withArgs(address);
         }
         expect(await bond.tradeStatus()).to.equal(TRADE.inactive);
-        const first = await f.tradeArguments();
-        await offeredBond.inceptTrade(manifest.target);
-        await expect(offeredBond.inceptTrade(manifest.target)).to.be.revertedWithCustomError(bond, "InvalidTradeStatus");
+        await offeredBond.inceptTrade(...first.slice(1));
         const firstRevision = await bond.stateVersion();
         const updated = JSON.parse(await manifest.text());
         updated.version = 2;
@@ -256,27 +254,32 @@ describe("FixedRateBond with local demo integrations", function () {
         const resource = await (await ethers.getContractFactory("TextResource")).deploy(
             issuer.address, await manifest.resourceType(), "application/json", "0x", digest);
         await resource.waitForDeployment();
-        await expect(offeredBond.inceptTrade(resource.target))
-            .to.be.revertedWithCustomError(bond, "ManifestNotFinalized").withArgs(resource.target);
+        const revisedHash = f.agreementHash(digest);
+        const revisedData = encodeBondTradeData(resource.target, revisedHash);
+        const revisedOffer = [issuer.address, buyer.address, revisedData, ...first.slice(4)];
+        await expect(offeredBond.inceptTrade(...revisedOffer))
+            .to.be.revertedWithCustomError(bond, "InvalidTradeStatus");
         expect(await bond.stateVersion()).to.equal(firstRevision);
         expect(await bond.termsHash()).to.equal(f.offeredTermsHash);
         expect(await bond.legalDocumentsManifest()).to.equal(manifest.target);
+        await expect(offeredBond.cancelTrade(...first))
+            .to.emit(bond, "TradeCanceled").withArgs(issuer.address, first[0]);
+        const canceledRevision = await bond.stateVersion();
+        await expect(offeredBond.inceptTrade(...revisedOffer))
+            .to.be.revertedWithCustomError(bond, "ManifestNotFinalized").withArgs(resource.target);
+        expect(await bond.tradeStatus()).to.equal(TRADE.cancelled);
+        expect(await bond.stateVersion()).to.equal(canceledRevision);
         expect(await bond.tradeId()).to.equal(first[0]);
         await resource.connect(issuer).appendChunk(content);
         await resource.connect(issuer).finalize(digest);
-        const revisedHash = f.agreementHash(digest);
-        const revisedData = encodeBondTradeData(resource.target, revisedHash);
-        await expect(offeredBond.inceptTrade(issuer.address, buyer.address, revisedData, ...first.slice(4)))
-            .to.be.revertedWithCustomError(bond, "InvalidTradeStatus");
         const delegate = bond.connect(outsider);
-        await expect(delegate.inceptTrade(resource.target))
+        await expect(delegate.inceptTrade(...revisedOffer))
             .to.be.revertedWithCustomError(bond, "UnauthorizedTradeCaller").withArgs(outsider.address, issuer.address);
         await offeredBond.setTradeOperator(outsider.address, true);
-        const newId = await delegate.inceptTrade.staticCall(resource.target);
+        const newId = await delegate.inceptTrade.staticCall(...revisedOffer);
         expect(newId).not.to.equal(first[0]);
-        await expect(delegate.inceptTrade(resource.target))
-            .to.emit(bond, "TradeCanceled").withArgs(issuer.address, first[0])
-            .and.to.emit(bond, "TradeIncepted").withArgs(issuer.address, buyer.address, newId, revisedData, ...first.slice(4));
+        await expect(delegate.inceptTrade(...revisedOffer))
+            .to.emit(bond, "TradeIncepted").withArgs(issuer.address, buyer.address, newId, revisedData, ...first.slice(4));
         expect(await bond.tradeId()).to.equal(newId);
         expect(await bond.stateVersion()).to.be.greaterThan(firstRevision);
         expect(await bond.legalDocumentsManifest()).to.equal(resource.target);
@@ -286,12 +289,12 @@ describe("FixedRateBond with local demo integrations", function () {
         await expect(bond.connect(buyer).confirmTrade(newId, ...first.slice(1))).to.be.revertedWithCustomError(bond, "TermsMismatch");
 
         // Re-offering the first manifest repeats every economic field, but requires a fresh acceptance.
-        await expect(offeredBond.inceptTrade(manifest.target))
+        await expect(offeredBond.cancelTrade(newId, ...revisedOffer))
             .to.emit(bond, "TradeCanceled").withArgs(issuer.address, newId);
-        const last = await f.tradeArguments();
+        const inception = await eventArgs(await offeredBond.inceptTrade(...first.slice(1)), bond, "TradeIncepted");
+        const last = [inception.tradeId, ...first.slice(1)];
         expect(last[0]).not.to.equal(first[0]);
         expect(last[0]).not.to.equal(newId);
-        expect(last.slice(1)).to.deep.equal(first.slice(1));
         await expect(bond.connect(buyer).confirmTrade(...first)).to.be.revertedWithCustomError(bond, "TermsMismatch");
         await expect(offeredBond.cancelTrade(...first)).to.be.revertedWithCustomError(bond, "TermsMismatch");
         await bond.connect(buyer).confirmTrade(...last);
@@ -306,13 +309,14 @@ describe("FixedRateBond with local demo integrations", function () {
         const issued = await eventArgs(await issuerDesk.issueProduct(f.definitionId, f.definitionVersion, f.payload),
             f.registry, "ProductIssued");
         const second = await ethers.getContractAt("FixedRateBond", issued.product);
-        await second.connect(issuer).inceptTrade(manifest.target);
-        expect(await second.legalDocumentsHash()).to.equal(await bond.legalDocumentsHash());
-        const secondHash = await second.termsHash();
+        const secondHash = f.agreementHash(keccak256(await manifest.content()), second.target);
         expect(secondHash).not.to.equal(f.offeredTermsHash);
         const data = encodeBondTradeData(manifest.target, secondHash);
-        await second.connect(buyer).confirmTrade(await second.tradeId(), issuer.address, buyer.address,
-            data, -terms.initialAggregateAmount, await second.settlementAmount(), "");
+        const offer = [issuer.address, buyer.address, data, -terms.initialAggregateAmount, await second.settlementAmount(), ""];
+        const inception = await eventArgs(await second.connect(issuer).inceptTrade(...offer), second, "TradeIncepted");
+        expect(await second.legalDocumentsHash()).to.equal(await bond.legalDocumentsHash());
+        expect(await second.termsHash()).to.equal(secondHash);
+        await second.connect(buyer).confirmTrade(inception.tradeId, ...offer);
         expect(await second.tradeStatus()).to.equal(TRADE.confirmed);
     });
 
@@ -332,17 +336,12 @@ describe("FixedRateBond with local demo integrations", function () {
         await expect(bond.connect(outsider).cancelTrade(...args))
             .to.emit(bond, "TradeCanceled").withArgs(issuer.address, await bond.tradeId());
         expect(await bond.tradeStatus()).to.equal(TRADE.cancelled);
-        await expect(bond.connect(issuer).inceptTrade(f.manifest.target))
-            .to.be.revertedWithCustomError(bond, "InvalidTradeStatus");
         expect(await token.balanceOf(issuer.address)).to.equal(3n);
         expect(await token.balanceOf(buyer.address)).to.equal(0n);
         expect(await cash.balanceOf(issuer.address)).to.equal(100_000n);
         expect(await cash.balanceOf(buyer.address)).to.equal(100_000n);
-        for (const [caller, method] of [[issuer, "inceptTrade"], [buyer, "confirmTrade"], [outsider, "cancelTrade"]]) {
-            const callArgs = method === "inceptTrade" ? args.slice(1) : args;
-            await expect(bond.connect(caller)[method](...callArgs))
-                .to.be.revertedWithCustomError(bond, "InvalidTradeStatus");
-        }
+        await expect(bond.connect(buyer).confirmTrade(...args)).to.be.revertedWithCustomError(bond, "InvalidTradeStatus");
+        await expect(bond.connect(outsider).cancelTrade(...args)).to.be.revertedWithCustomError(bond, "InvalidTradeStatus");
         expect(await bond.tradeId()).to.equal(args[0]);
     });
 

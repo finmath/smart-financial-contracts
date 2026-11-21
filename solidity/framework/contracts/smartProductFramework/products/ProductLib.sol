@@ -106,11 +106,6 @@ library ProductLib {
         );
     }
 
-    /// @notice Canonical tradeData for a bond offer, repeated unchanged through the ERC-6123 lifecycle.
-    function encodeOfferData(address manifest, bytes32 agreementHash) external pure returns (string memory) {
-        return LibString.toHexString(abi.encode(manifest, agreementHash));
-    }
-
     /// @notice Reads a lowercase, 0x-prefixed ABI encoding of (address, bytes32).
     function decodeOfferData(string memory data) external pure returns (address manifest, bytes32 agreementHash) {
         bytes memory hexData = bytes(data);

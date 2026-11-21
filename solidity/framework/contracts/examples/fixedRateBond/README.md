@@ -29,17 +29,15 @@ contract-size limits remain enabled, including for factory deployment.
    nonbinding request to the issuer's trading address. The issuer uses that
    contract to create the bond through the product registry at the requested
    definition revision. The payment operator authorizes the bond in the adapter.
-2. The issuer makes an offer on the bond with `inceptTrade(manifestAddress)`.
-   This selects a finalized on-chain `TextResource` listing the issuance
-   conditions and their content hashes. The buyer reviews those documents and
-   verifies the hash covering the bond economics, legal manifest, asset token
-   and payment contract. The buyer then calls `confirmTrade` with the trade ID
-   and the six original fields from `TradeIncepted`. These include the issuer,
-   buyer, encoded manifest address and agreement hash, negative aggregate
-   nominal position, positive issue-price payment and initial settlement data.
-   The one-argument offer uses an empty settlement-data string. Applications
-   supplying settlement data use the six-argument ERC-6123 method.
-   Confirmation enables delivery of the existing asset.
+2. The issuer calls ERC-6123 `inceptTrade(issuer, buyer, tradeData, position, paymentAmount, initialSettlementData)`.
+   Its application prepares `tradeData` as a lowercase hex string encoding
+   `abi.encode(manifestAddress, agreementHash)`. The address selects a finalized
+   `TextResource` listing the issuance conditions and their hashes. The issuer
+   offers the negative aggregate nominal position and positive issue-price payment.
+   The buyer reviews the documents and verifies the agreement hash against the
+   bond economics, manifest contents, asset token and payment contract. To accept,
+   the buyer calls `confirmTrade` with the generated trade ID and all six original
+   fields from `TradeIncepted`. Confirmation enables delivery of the existing asset.
 3. The issuer approves the asset escrow. The buyer incepts delivery and a matching
    payment. The operator commits two outcome hashes; the bond checks the payment
    context and locks the asset. Success moves cash and asset units atomically.
@@ -58,12 +56,12 @@ contract-size limits remain enabled, including for factory deployment.
 The four agreement states remain separate from `positionState`, which tracks
 delivery, the redemption proposal, authorization to return the units, and repayment.
 `tradeId()` exposes the first trade ID, derived from the bond address, even
-before inception. While an offer is pending, the issuer can select a different
-manifest using `inceptTrade(manifestAddress)`. This withdraws the previous offer
-and emits `TradeCanceled` and `TradeIncepted` in order, with distinct IDs.
-Each ERC-6123 inception tuple remains immutable. A buyer confirming an offer
-uses its ID and exact terms. After confirmation or standalone cancellation the
-bond cannot be offered again. Maturity repayment uses the confirmed trade ID.
+before inception. To revise an offer, the issuer calls `cancelTrade` with the
+pending trade ID and all six inception fields. After `TradeCanceled`, the issuer
+can submit another `inceptTrade` on the same bond. The new `TradeIncepted` event
+supplies a fresh ID even if the parties reuse the same documents and economics.
+Only the pending offer can be confirmed. Confirmation fixes the manifest and
+terms for this bond, and maturity repayment uses the confirmed trade ID.
 The requesting issuer can cancel an unmatched redemption proposal or an accepted
 proposal before an asset attempt is active; a later request starts a new proposal.
 

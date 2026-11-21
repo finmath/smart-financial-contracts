@@ -104,10 +104,11 @@ The following workflow shows a buyer approaching an issuer.
    product. A provider can also issue directly from an active definition through
    its trading contract's `issueProduct(id, version, productPayload)`. A fulfilled
    request points to this instance. A newly created bond is still `Inactive`.
-4. To make an offer, the issuer calls `inceptTrade(manifestAddress)` on the bond.
-   The buyer reviews the offered documents and economics, then calls
-   `confirmTrade` with the offer ID and the exact inception fields, including
-   the reviewed agreement hash. Confirmation enables delivery.
+4. The issuer makes an offer through the bond's ERC-6123 `inceptTrade` method.
+   Its `tradeData` contains the finalized manifest address and agreement hash.
+   The buyer reviews the documents and economics, then calls `confirmTrade` with
+   the generated trade ID and all six original inception fields. Confirmation
+   fixes the agreement and enables delivery.
 
 Use `registry.isRegisteredProduct(product)` to verify provenance. Index trading
 contract events for request history and registry events for definitions and issues.
@@ -132,25 +133,24 @@ To verify an offer, hash the exact bytes from the manifest's `content()` with
 Keccak-256, check them against the recorded hash, and verify the documents
 referenced in those bytes.
 
-The issuer's offer and the buyer's confirmation use the same
-`keccak256(abi.encode(economicTermsHash, legalDocumentsHash, assetToken, paymentContract))`.
-While an offer is open the issuer can call `inceptTrade(manifestAddress)` with
-a different manifest. The bond withdraws the old offer and emits a fresh trade
-ID. The buyer must review the new offer and confirm its ID, even if the
-document bytes match an earlier offer. Once confirmed, the agreed manifest is
-fixed. Before the first offer the product reports a zero manifest address
-and hash. The [v2 product XML envelope](resources/smart-financial-product-envelope-v2.xsd)
-includes `LegalDocuments` with `href` and `integrity` once the issuer selects a manifest.
+The issuer's application prepares the agreement hash as
+`keccak256(abi.encode(economicTermsHash, legalDocumentsHash, assetToken, paymentContract))`,
+using the finalized manifest's content hash for `legalDocumentsHash`. It encodes
+the manifest address and agreement hash together as `tradeData`. In ethers, use
+`AbiCoder.defaultAbiCoder().encode(["address", "bytes32"], [manifestAddress, agreementHash])`.
+The issuer supplies the negative aggregate nominal position and the positive
+issue-price payment. `TradeIncepted` emits the generated trade ID and the original
+fields, including the initial settlement data.
 
-For the six-argument ERC-6123 `inceptTrade`, encode the manifest address and
-the reviewed agreement hash together in `tradeData` using the lowercase hex
-string returned by ethers' `AbiCoder.defaultAbiCoder().encode(["address", "bytes32"], [manifestAddress, agreementHash])`.
-The issuer is the inceptor. Its position is the negative aggregate nominal
-amount and its payment is the positive issue-price proceeds. `TradeIncepted`
-emits the generated ID and the original fields. Use them unchanged for
-`confirmTrade` or `cancelTrade`, including the settlement data. The issuer can
-authorize an operator on the bond to offer or withdraw. The buyer can authorize
-an operator on the same bond to confirm.
+To revise a pending offer, the issuer first calls `cancelTrade` with its ID and
+exact inception fields. Once the cancellation succeeds, the issuer can call
+`inceptTrade` again on the same bond. Each new offer receives a fresh ID, even
+when its manifest and economics match a withdrawn offer. The issuer can authorize
+a bond operator to offer or withdraw, and the buyer can authorize one to confirm.
+
+Before the first offer the product reports a zero manifest address and hash.
+The [v2 product XML envelope](resources/smart-financial-product-envelope-v2.xsd)
+includes `LegalDocuments` with `href` and `integrity` once the issuer selects a manifest.
 
 ## History and licensing
 

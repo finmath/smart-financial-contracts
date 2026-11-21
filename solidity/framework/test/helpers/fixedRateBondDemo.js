@@ -114,11 +114,11 @@ export async function deployFixedRateBondDemo() {
     }] });
     const manifest = await resource(keccak256(toUtf8Bytes("demo:legal-manifest")), "application/json", manifestText);
     const abi = AbiCoder.defaultAbiCoder();
-    const payloadHash = keccak256(abi.encode(["address", "address", TERMS_TYPE, PERIOD_TYPE + "[]"],
-        [bond.target, issuer.address, terms, couponPeriods]));
-    const economicTermsHash = keccak256(abi.encode(["bytes32", "bytes32"],
-        [payloadHash, keccak256(toUtf8Bytes(termsText))]));
-    function agreementHash(manifestHash) {
+    function agreementHash(manifestHash, productAddress = bond.target) {
+        const payloadHash = keccak256(abi.encode(["address", "address", TERMS_TYPE, PERIOD_TYPE + "[]"],
+            [productAddress, issuer.address, terms, couponPeriods]));
+        const economicTermsHash = keccak256(abi.encode(["bytes32", "bytes32"],
+            [payloadHash, keccak256(toUtf8Bytes(termsText))]));
         return keccak256(abi.encode(["bytes32", "bytes32", "address", "address"],
             [economicTermsHash, manifestHash, token.target, payment.target]));
     }
@@ -136,8 +136,9 @@ export async function deployFixedRateBondDemo() {
             -terms.initialAggregateAmount, await bond.settlementAmount(), initialSettlementData];
     }
     async function agree() {
-        await bond.connect(issuer).inceptTrade(manifest.target);
-        await bond.connect(buyer).confirmTrade(...await tradeArguments());
+        const offer = (await tradeArguments()).slice(1);
+        const inception = await eventArgs(await bond.connect(issuer).inceptTrade(...offer), bond, "TradeIncepted");
+        await bond.connect(buyer).confirmTrade(inception.tradeId, ...offer);
     }
     return { ethers, operator, issuer, buyer, outsider, clients, registry, cash, token, payment,
         factory, bondLib, bond, issuerDesk, terms, couponPeriods, definitionId, definitionVersion, requestId: requested.tradeRequestId,
