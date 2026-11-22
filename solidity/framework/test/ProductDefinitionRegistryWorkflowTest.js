@@ -279,7 +279,7 @@ describe("Product definitions and per-party trading", function () {
         expect(await product.productTermsTemplate()).to.equal(terms.target);
         const issuedXml = await product.stateXmlTemplate();
         expect(issuedXml).to.contain(await terms.web3Url());
-        expect(issuedXml).not.to.contain("<LegalDocuments");
+        expect(issuedXml).not.to.contain("<LegalDocumentation");
         expect(await bobDesk.getActiveTradeRequests(definition)).to.deep.equal([]);
         for (const id of [first, second]) {
             const record = await bobDesk.tradeRequestState(id);

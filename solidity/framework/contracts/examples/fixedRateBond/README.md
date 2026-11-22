@@ -31,11 +31,11 @@ contract-size limits remain enabled, including for factory deployment.
    definition revision. The payment operator authorizes the bond in the adapter.
 2. The issuer calls ERC-6123 `inceptTrade(issuer, buyer, tradeData, position, paymentAmount, initialSettlementData)`.
    Its application prepares `tradeData` as a lowercase hex string encoding
-   `abi.encode(manifestAddress, agreementHash)`. The address selects a finalized
-   `TextResource` listing the issuance conditions and their hashes. The issuer
+   `abi.encode(legalDocumentationAddress, agreementHash)`. The address selects
+   a finalized `TextResource` containing the text of the issuance conditions. The issuer
    offers the negative aggregate nominal position and positive issue-price payment.
-   The buyer reviews the documents and verifies the agreement hash against the
-   bond economics, manifest contents, asset token and payment contract. To accept,
+   The buyer reads the legal documentation and verifies the agreement hash against
+   the bond economics, documentation content hash, asset token and payment contract. To accept,
    the buyer calls `confirmTrade` with the generated trade ID and all six original
    fields from `TradeIncepted`. Confirmation enables delivery of the existing asset.
 3. The issuer approves the asset escrow. The buyer incepts delivery and a matching
@@ -58,10 +58,11 @@ delivery, the redemption proposal, authorization to return the units, and repaym
 `tradeId()` exposes the first trade ID, derived from the bond address, even
 before inception. To revise an offer, the issuer calls `cancelTrade` with the
 pending trade ID and all six inception fields. After `TradeCanceled`, the issuer
-can submit another `inceptTrade` on the same bond. The new `TradeIncepted` event
-supplies a fresh ID even if the parties reuse the same documents and economics.
-Only the pending offer can be confirmed. Confirmation fixes the manifest and
-terms for this bond, and maturity repayment uses the confirmed trade ID.
+can submit another `inceptTrade` on the same bond with the documentation address
+fixed by its first successful offer. Using a different resource requires a new
+bond. Each new `TradeIncepted` event supplies a fresh ID even when all offer
+fields are identical. The buyer confirms the pending offer, and maturity
+repayment uses the confirmed trade ID.
 The requesting issuer can cancel an unmatched redemption proposal or an accepted
 proposal before an asset attempt is active; a later request starts a new proposal.
 

@@ -60,7 +60,7 @@ describe("FixedRateBond with local demo integrations", function () {
     }
 
     it("runs a registered bond from agreed resources through delivery, coupons and redemption", async function () {
-        const { ethers, issuer, buyer, bond, registry, factory, termsResource, issuanceConditions, manifest,
+        const { ethers, issuer, buyer, bond, registry, factory, termsResource, documentation,
             payment, cash, token, terms } = f;
         const request = await f.issuerDesk.tradeRequestState(f.requestId);
         expect(request.requester).to.equal(buyer.address);
@@ -80,15 +80,13 @@ describe("FixedRateBond with local demo integrations", function () {
         expect(await bond.buyer()).to.equal(buyer.address);
         expect(await termsResource.isFinalized()).to.equal(true);
         expect(await bond.stateXmlTemplate()).to.include(await termsResource.web3Url());
-        expect(await bond.legalDocumentsManifest()).to.equal(ZeroAddress);
-        expect(await bond.legalDocumentsURI()).to.equal("");
-        expect(await bond.legalDocumentsHash()).to.equal(ZeroHash);
-        expect(await bond.stateXmlTemplate()).not.to.include("<LegalDocuments");
-        const manifestHash = keccak256(await manifest.content());
-        expect(JSON.parse(await manifest.text()).documents).to.deep.equal([{
-            role: "issuance-conditions", mediaType: "text/plain", uri: await issuanceConditions.web3Url(),
-            contentHash: keccak256(await issuanceConditions.content())
-        }]);
+        expect(await bond.legalDocumentation()).to.equal(ZeroAddress);
+        expect(await bond.legalDocumentationURI()).to.equal("");
+        expect(await bond.legalDocumentationHash()).to.equal(ZeroHash);
+        expect(await bond.stateXmlTemplate()).not.to.include("<LegalDocumentation");
+        const documentationHash = keccak256(await documentation.content());
+        expect(await documentation.text()).to.equal(f.documentationText);
+        expect(await documentation.isFinalized()).to.equal(true);
         expect(await bond.documentStatus()).to.equal("PENDING");
         expect(await bond.termsHash()).to.equal(ZeroHash);
         expect(await bond.agreedTermsHash()).to.equal(ZeroHash);
@@ -116,12 +114,12 @@ describe("FixedRateBond with local demo integrations", function () {
         await expect(bond.connect(issuer).inceptTrade(...args.slice(1)))
             .to.emit(bond, "TradeIncepted").withArgs(issuer.address, buyer.address, args[0], ...args.slice(3));
         expect(await bond.tradeStatus()).to.equal(TRADE.incepted);
-        expect(await bond.legalDocumentsManifest()).to.equal(manifest.target);
-        expect(await bond.legalDocumentsURI()).to.equal(await manifest.web3Url());
-        expect(await bond.legalDocumentsHash()).to.equal(manifestHash);
-        expect(await bond.termsHash()).to.equal(f.agreementHash(manifestHash));
+        expect(await bond.legalDocumentation()).to.equal(documentation.target);
+        expect(await bond.legalDocumentationURI()).to.equal(await documentation.web3Url());
+        expect(await bond.legalDocumentationHash()).to.equal(documentationHash);
+        expect(await bond.termsHash()).to.equal(f.agreementHash(documentationHash));
         expect(await bond.stateXmlTemplate()).to.include(
-            `<LegalDocuments href="${await manifest.web3Url()}" integrity="keccak256-${manifestHash}"/>`);
+            `<LegalDocumentation href="${await documentation.web3Url()}" integrity="keccak256-${documentationHash}"/>`);
         expect(await token.balanceOf(issuer.address)).to.equal(3n);
         await bond.connect(buyer).confirmTrade(...args);
         expect(await bond.agreedTermsHash()).to.equal(f.offeredTermsHash);
@@ -165,7 +163,7 @@ describe("FixedRateBond with local demo integrations", function () {
     });
 
     it("requires the right parties and every inception field before enabling settlement", async function () {
-        const { issuer, buyer, outsider, bond, token, manifest } = f;
+        const { issuer, buyer, outsider, bond, token, documentation } = f;
         const args = await f.tradeArguments("initial market data");
         expect(bond.interface.getFunction("inceptTrade").format())
             .to.equal("inceptTrade(address,address,string,int256,int256,string)");
@@ -176,11 +174,13 @@ describe("FixedRateBond with local demo integrations", function () {
         expect(await bond.tradeStatus()).to.equal(TRADE.inactive);
         await expect(bond.connect(buyer).confirmTrade(...args))
             .to.be.revertedWithCustomError(bond, "InvalidTradeStatus");
-        const manifestHash = await manifest.contentHash();
-        const wrongData = encodeBondTradeData(manifest.target, manifestHash);
+        const documentationHash = await documentation.contentHash();
+        const wrongData = encodeBondTradeData(documentation.target, documentationHash);
         await expect(bond.connect(issuer).inceptTrade(issuer.address, buyer.address, wrongData, ...args.slice(4)))
-            .to.be.revertedWithCustomError(bond, "TermsMismatch").withArgs(f.offeredTermsHash, manifestHash);
-        for (const malformed of [manifest.target, args[3].slice(2), "0x1" + args[3].slice(3),
+            .to.be.revertedWithCustomError(bond, "TermsMismatch").withArgs(f.offeredTermsHash, documentationHash);
+        expect(await bond.legalDocumentation()).to.equal(ZeroAddress);
+        expect(await bond.legalDocumentationHash()).to.equal(ZeroHash);
+        for (const malformed of [documentation.target, args[3].slice(2), "0x1" + args[3].slice(3),
             "0x" + args[3].slice(2).toUpperCase(), args[3].slice(0, -1) + "z"]) {
             await expect(bond.connect(issuer).inceptTrade(issuer.address, buyer.address, malformed, ...args.slice(4)))
                 .to.be.revertedWithCustomError(bond, "InvalidTradeData");
@@ -235,86 +235,97 @@ describe("FixedRateBond with local demo integrations", function () {
             .to.be.revertedWithCustomError(bond, "InvalidTradeStatus");
     });
 
-    it("requires cancellation before a new offer and a fresh confirmation for each trade ID", async function () {
-        const { ethers, issuer, buyer, outsider, bond, manifest } = f;
+    it("pins the first successful offer's legal documentation for the lifetime of the bond", async function () {
+        const { ethers, issuer, bond, documentation } = f;
         const offeredBond = bond.connect(issuer);
         const first = await f.tradeArguments();
         for (const address of [ZeroAddress, issuer.address, f.token.target]) {
             const data = encodeBondTradeData(address, f.offeredTermsHash);
-            await expect(offeredBond.inceptTrade(issuer.address, buyer.address, data, ...first.slice(4)))
-                .to.be.revertedWithCustomError(bond, "InvalidLegalDocumentsManifest").withArgs(address);
+            await expect(offeredBond.inceptTrade(issuer.address, f.buyer.address, data, ...first.slice(4)))
+                .to.be.revertedWithCustomError(bond, "InvalidLegalDocumentation").withArgs(address);
         }
-        expect(await bond.tradeStatus()).to.equal(TRADE.inactive);
-        await offeredBond.inceptTrade(...first.slice(1));
-        const firstRevision = await bond.stateVersion();
-        const updated = JSON.parse(await manifest.text());
-        updated.version = 2;
-        const content = toUtf8Bytes(JSON.stringify(updated));
-        const digest = keccak256(content);
-        const resource = await (await ethers.getContractFactory("TextResource")).deploy(
-            issuer.address, await manifest.resourceType(), "application/json", "0x", digest);
-        await resource.waitForDeployment();
-        const revisedHash = f.agreementHash(digest);
-        const revisedData = encodeBondTradeData(resource.target, revisedHash);
-        const revisedOffer = [issuer.address, buyer.address, revisedData, ...first.slice(4)];
-        await expect(offeredBond.inceptTrade(...revisedOffer))
-            .to.be.revertedWithCustomError(bond, "InvalidTradeStatus");
-        expect(await bond.stateVersion()).to.equal(firstRevision);
-        expect(await bond.termsHash()).to.equal(f.offeredTermsHash);
-        expect(await bond.legalDocumentsManifest()).to.equal(manifest.target);
-        await expect(offeredBond.cancelTrade(...first))
-            .to.emit(bond, "TradeCanceled").withArgs(issuer.address, first[0]);
-        const canceledRevision = await bond.stateVersion();
-        await expect(offeredBond.inceptTrade(...revisedOffer))
-            .to.be.revertedWithCustomError(bond, "ManifestNotFinalized").withArgs(resource.target);
-        expect(await bond.tradeStatus()).to.equal(TRADE.cancelled);
-        expect(await bond.stateVersion()).to.equal(canceledRevision);
-        expect(await bond.tradeId()).to.equal(first[0]);
-        await resource.connect(issuer).appendChunk(content);
-        await resource.connect(issuer).finalize(digest);
-        const delegate = bond.connect(outsider);
-        await expect(delegate.inceptTrade(...revisedOffer))
-            .to.be.revertedWithCustomError(bond, "UnauthorizedTradeCaller").withArgs(outsider.address, issuer.address);
-        await offeredBond.setTradeOperator(outsider.address, true);
-        const newId = await delegate.inceptTrade.staticCall(...revisedOffer);
-        expect(newId).not.to.equal(first[0]);
-        await expect(delegate.inceptTrade(...revisedOffer))
-            .to.emit(bond, "TradeIncepted").withArgs(issuer.address, buyer.address, newId, revisedData, ...first.slice(4));
-        expect(await bond.tradeId()).to.equal(newId);
-        expect(await bond.stateVersion()).to.be.greaterThan(firstRevision);
-        expect(await bond.legalDocumentsManifest()).to.equal(resource.target);
-        expect(await bond.legalDocumentsHash()).to.equal(digest);
-        expect(await bond.termsHash()).to.equal(revisedHash);
-        await expect(bond.connect(buyer).confirmTrade(...first)).to.be.revertedWithCustomError(bond, "TermsMismatch");
-        await expect(bond.connect(buyer).confirmTrade(newId, ...first.slice(1))).to.be.revertedWithCustomError(bond, "TermsMismatch");
 
-        // Re-offering the first manifest repeats every economic field, but requires a fresh acceptance.
-        await expect(offeredBond.cancelTrade(newId, ...revisedOffer))
-            .to.emit(bond, "TradeCanceled").withArgs(issuer.address, newId);
-        const inception = await eventArgs(await offeredBond.inceptTrade(...first.slice(1)), bond, "TradeIncepted");
-        const last = [inception.tradeId, ...first.slice(1)];
-        expect(last[0]).not.to.equal(first[0]);
-        expect(last[0]).not.to.equal(newId);
-        await expect(bond.connect(buyer).confirmTrade(...first)).to.be.revertedWithCustomError(bond, "TermsMismatch");
-        await expect(offeredBond.cancelTrade(...first)).to.be.revertedWithCustomError(bond, "TermsMismatch");
-        await bond.connect(buyer).confirmTrade(...last);
-        expect(await bond.agreedTermsHash()).to.equal(f.offeredTermsHash);
-        await paySuccessfulAttempt(await startAssetAttempt(f.token, "revised offer"));
-        expect(await f.token.balanceOf(buyer.address)).to.equal(3n);
+        const Resource = await ethers.getContractFactory("TextResource", issuer);
+        const type = await documentation.resourceType();
+        const amendedBytes = toUtf8Bytes(f.documentationText + " Interest is due semiannually.");
+        const amendedHash = keccak256(amendedBytes);
+        const amended = await Resource.deploy(issuer.address, type, "text/plain", "0x", amendedHash);
+        await amended.waitForDeployment();
+        const amendedData = encodeBondTradeData(amended.target, f.agreementHash(amendedHash));
+        const amendedOffer = [issuer.address, f.buyer.address, amendedData, ...first.slice(4)];
+        await expect(offeredBond.inceptTrade(...amendedOffer))
+            .to.be.revertedWithCustomError(bond, "LegalDocumentationNotFinalized").withArgs(amended.target);
+        expect(await bond.legalDocumentation()).to.equal(ZeroAddress);
+        expect(await bond.tradeStatus()).to.equal(TRADE.inactive);
+        await amended.appendChunk(amendedBytes);
+        await amended.finalize(amendedHash);
+
+        await offeredBond.inceptTrade(...first.slice(1));
+        await expect(offeredBond.inceptTrade(...amendedOffer)).to.be.revertedWithCustomError(bond, "InvalidTradeStatus");
+        await offeredBond.cancelTrade(...first);
+        const canceledRevision = await bond.stateVersion();
+        const documentationHash = keccak256(await documentation.content());
+        const copy = await Resource.deploy(issuer.address, type, "text/plain", await documentation.content(), documentationHash);
+        await copy.waitForDeployment();
+        for (const [other, reviewedHash] of [[amended, f.agreementHash(amendedHash)], [copy, f.offeredTermsHash]]) {
+            const data = encodeBondTradeData(other.target, reviewedHash);
+            await expect(offeredBond.inceptTrade(issuer.address, f.buyer.address, data, ...first.slice(4)))
+                .to.be.revertedWithCustomError(bond, "LegalDocumentationAlreadySet").withArgs(documentation.target, other.target);
+        }
+        expect(await bond.legalDocumentation()).to.equal(documentation.target);
+        expect(await bond.legalDocumentationHash()).to.equal(documentationHash);
+        expect(await bond.termsHash()).to.equal(f.offeredTermsHash);
+        expect(await bond.tradeStatus()).to.equal(TRADE.cancelled);
+        expect(await bond.tradeId()).to.equal(first[0]);
+        expect(await bond.stateVersion()).to.equal(canceledRevision);
     });
 
-    it("reuses the same finalized manifest in independently confirmed offers", async function () {
-        const { ethers, issuerDesk, issuer, buyer, bond, manifest, terms } = f;
+    it("requires fresh confirmations across reoffers using the same legal documentation", async function () {
+        const { issuer, buyer, outsider, bond, documentation, token } = f;
+        const offeredBond = bond.connect(issuer);
+        const first = await f.tradeArguments();
+        const offer = first.slice(1);
+        await offeredBond.inceptTrade(...offer);
+        await expect(offeredBond.cancelTrade(...first)).to.emit(bond, "TradeCanceled").withArgs(issuer.address, first[0]);
+
+        const delegate = bond.connect(outsider);
+        await expect(delegate.inceptTrade(...offer))
+            .to.be.revertedWithCustomError(bond, "UnauthorizedTradeCaller").withArgs(outsider.address, issuer.address);
+        await offeredBond.setTradeOperator(outsider.address, true);
+        const revisedOffer = [...offer.slice(0, -1), "revised initial settlement data"];
+        const revised = await eventArgs(await delegate.inceptTrade(...revisedOffer), bond, "TradeIncepted");
+        expect(revised.initiator).to.equal(issuer.address);
+        expect(revised.tradeId).not.to.equal(first[0]);
+        expect(await bond.legalDocumentation()).to.equal(documentation.target);
+        await expect(bond.connect(buyer).confirmTrade(...first)).to.be.revertedWithCustomError(bond, "TermsMismatch");
+        await expect(bond.connect(buyer).confirmTrade(revised.tradeId, ...offer)).to.be.revertedWithCustomError(bond, "TermsMismatch");
+        await delegate.cancelTrade(revised.tradeId, ...revisedOffer);
+
+        const inception = await eventArgs(await delegate.inceptTrade(...offer), bond, "TradeIncepted");
+        expect(inception.tradeId).not.to.equal(first[0]);
+        expect(inception.tradeId).not.to.equal(revised.tradeId);
+        expect(await bond.tradeId()).to.equal(inception.tradeId);
+        await expect(bond.connect(buyer).confirmTrade(...first)).to.be.revertedWithCustomError(bond, "TermsMismatch");
+        await expect(delegate.cancelTrade(...first)).to.be.revertedWithCustomError(bond, "TermsMismatch");
+        await bond.connect(buyer).confirmTrade(inception.tradeId, ...offer);
+        expect(await bond.agreedTermsHash()).to.equal(f.offeredTermsHash);
+        await paySuccessfulAttempt(await startAssetAttempt(token, "second offer"));
+        expect(await token.balanceOf(buyer.address)).to.equal(3n);
+    });
+
+    it("reuses one finalized documentation resource across independently confirmed bonds", async function () {
+        const { ethers, issuerDesk, issuer, buyer, bond, documentation, terms } = f;
         await f.agree();
         const issued = await eventArgs(await issuerDesk.issueProduct(f.definitionId, f.definitionVersion, f.payload),
             f.registry, "ProductIssued");
         const second = await ethers.getContractAt("FixedRateBond", issued.product);
-        const secondHash = f.agreementHash(keccak256(await manifest.content()), second.target);
+        const secondHash = f.agreementHash(keccak256(await documentation.content()), second.target);
         expect(secondHash).not.to.equal(f.offeredTermsHash);
-        const data = encodeBondTradeData(manifest.target, secondHash);
+        const data = encodeBondTradeData(documentation.target, secondHash);
         const offer = [issuer.address, buyer.address, data, -terms.initialAggregateAmount, await second.settlementAmount(), ""];
         const inception = await eventArgs(await second.connect(issuer).inceptTrade(...offer), second, "TradeIncepted");
-        expect(await second.legalDocumentsHash()).to.equal(await bond.legalDocumentsHash());
+        expect(await second.legalDocumentation()).to.equal(await bond.legalDocumentation());
+        expect(await second.legalDocumentationHash()).to.equal(await bond.legalDocumentationHash());
         expect(await second.termsHash()).to.equal(secondHash);
         await second.connect(buyer).confirmTrade(inception.tradeId, ...offer);
         expect(await second.tradeStatus()).to.equal(TRADE.confirmed);

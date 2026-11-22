@@ -23,8 +23,8 @@ library ProductLib {
     /// @dev Same selectors as AbstractProduct; validation stays in the constructor's delegatecall.
     error ZeroAddress(string field);
     error ZeroHash(string field);
-    error InvalidLegalDocumentsManifest(address manifest);
-    error ManifestNotFinalized(address manifest);
+    error InvalidLegalDocumentation(address documentation);
+    error LegalDocumentationNotFinalized(address documentation);
 
     function validateDeploymentContext(CommonDeploymentParams memory common) external pure {
         if (common.productRegistry == address(0)) {
@@ -41,32 +41,32 @@ library ProductLib {
         }
     }
 
-    /// @notice Reads the digest from a finalized on-chain manifest at offer time.
-    function manifestHash(address manifest) external view returns (bytes32 digest) {
-        if (!ERC165Checker.supportsInterface(manifest, type(ITextResource).interfaceId)) {
-            revert InvalidLegalDocumentsManifest(manifest);
+    /// @notice Reads the content hash of a finalized legal documentation resource.
+    function legalDocumentationHash(address documentation) external view returns (bytes32 digest) {
+        if (!ERC165Checker.supportsInterface(documentation, type(ITextResource).interfaceId)) {
+            revert InvalidLegalDocumentation(documentation);
         }
-        ITextResource resource = ITextResource(manifest);
-        if (!resource.isFinalized()) revert ManifestNotFinalized(manifest);
+        ITextResource resource = ITextResource(documentation);
+        if (!resource.isFinalized()) revert LegalDocumentationNotFinalized(documentation);
         digest = resource.contentHash();
-        if (digest == bytes32(0)) revert InvalidLegalDocumentsManifest(manifest);
+        if (digest == bytes32(0)) revert InvalidLegalDocumentation(documentation);
     }
 
-    /// @notice Canonical content locator for the offered manifest on this chain.
-    function manifestURI(address manifest) public view returns (string memory) {
-        if (manifest == address(0)) return "";
-        return string.concat("web3://", Strings.toHexString(manifest), ":", block.chainid.toString(), "/content");
+    /// @notice Canonical content locator for the legal documentation on this chain.
+    function legalDocumentationURI(address documentation) public view returns (string memory) {
+        if (documentation == address(0)) return "";
+        return string.concat("web3://", Strings.toHexString(documentation), ":", block.chainid.toString(), "/content");
     }
 
     /**
      * @notice Builds the common SmartFinancialProduct XML envelope.
-     * @dev The definition pins the ICMA BDT terms template. An offer adds the
-     *      legal manifest address and the digest observed when the offer was made.
+     * @dev The definition pins the ICMA BDT terms template. The first successful
+     *      inception pins the legal documentation resource and its content hash.
      */
     function productStateXml(
         address termsTemplate,
-        address manifest,
-        bytes32 legalDocumentsHash,
+        address documentation,
+        bytes32 documentationHash,
         string memory productType,
         string memory typeVersion
     ) external view returns (string memory) {
@@ -86,7 +86,7 @@ library ProductLib {
             _mediaTypeAttribute(ITextResource(termsTemplate)), ">",
             _include(ITextResource(termsTemplate)),
             "</ProductTermsTemplate>",
-            _legalDocumentsXml(manifest, legalDocumentsHash),
+            _legalDocumentationXml(documentation, documentationHash),
             "</ProductResources></SmartFinancialProduct>"
         );
     }
@@ -107,7 +107,7 @@ library ProductLib {
     }
 
     /// @notice Reads a lowercase, 0x-prefixed ABI encoding of (address, bytes32).
-    function decodeOfferData(string memory data) external pure returns (address manifest, bytes32 agreementHash) {
+    function decodeOfferData(string memory data) external pure returns (address documentation, bytes32 agreementHash) {
         bytes memory hexData = bytes(data);
         if (hexData.length != 130 || hexData[0] != "0" || hexData[1] != "x") revert InvalidTradeData();
         uint256 addressWord = _parseDigits(hexData, 2, 66, false);
@@ -117,18 +117,9 @@ library ProductLib {
 
     /// @notice Parses a 0x-prefixed 32-byte hash.
     function parseHash(string memory s) external pure returns (bytes32) {
-        return bytes32(_parseHex(s, 32));
-    }
-
-    /// @notice Parses a 0x-prefixed 20-byte address.
-    function parseManifestAddress(string memory s) external pure returns (address) {
-        return address(uint160(_parseHex(s, 20)));
-    }
-
-    function _parseHex(string memory s, uint256 byteLength) private pure returns (uint256) {
         bytes memory b = bytes(s);
-        if (b.length != 2 + byteLength * 2 || b[0] != "0" || b[1] != "x") revert InvalidTradeData();
-        return _parseDigits(b, 2, b.length, true);
+        if (b.length != 66 || b[0] != "0" || b[1] != "x") revert InvalidTradeData();
+        return bytes32(_parseDigits(b, 2, b.length, true));
     }
 
     function _parseDigits(bytes memory b, uint256 start, uint256 end, bool allowUppercase) private pure returns (uint256 value) {
@@ -171,9 +162,9 @@ library ProductLib {
         return string.concat("keccak256-", uint256(contentHash).toHexString(32));
     }
 
-    function _legalDocumentsXml(address manifest, bytes32 digest) private view returns (string memory) {
-        if (manifest == address(0)) return "";
-        return string.concat('<LegalDocuments href="', manifestURI(manifest), '" integrity="', _integrity(digest), '"/>');
+    function _legalDocumentationXml(address documentation, bytes32 digest) private view returns (string memory) {
+        if (documentation == address(0)) return "";
+        return string.concat('<LegalDocumentation href="', legalDocumentationURI(documentation), '" integrity="', _integrity(digest), '"/>');
     }
 
 }

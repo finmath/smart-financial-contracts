@@ -16,8 +16,8 @@ export function encodeBondPayload(terms, couponPeriods) {
     );
 }
 
-export function encodeBondTradeData(manifest, reviewedHash) {
-    return AbiCoder.defaultAbiCoder().encode(["address", "bytes32"], [manifest, reviewedHash]);
+export function encodeBondTradeData(documentationAddress, reviewedHash) {
+    return AbiCoder.defaultAbiCoder().encode(["address", "bytes32"], [documentationAddress, reviewedHash]);
 }
 
 export async function advanceTo(ethers, timestamp) {
@@ -106,23 +106,18 @@ export async function deployFixedRateBondDemo() {
         [requested.tradeRequestId], payload), registry, "ProductIssued");
     const bond = await ethers.getContractAt("FixedRateBond", issued.product);
 
-    const issuanceConditions = await resource(keccak256(toUtf8Bytes("demo:issuance-conditions")), "text/plain",
-        "Coupons and principal are payable in the cash asset specified by this bond.");
-    const manifestText = JSON.stringify({ documents: [{
-        role: "issuance-conditions", mediaType: "text/plain", uri: await issuanceConditions.web3Url(),
-        contentHash: await issuanceConditions.contentHash()
-    }] });
-    const manifest = await resource(keccak256(toUtf8Bytes("demo:legal-manifest")), "application/json", manifestText);
+    const documentationText = "Coupons and principal are payable in the cash asset specified by this bond.";
+    const documentation = await resource(keccak256(toUtf8Bytes("demo:legal-documentation")), "text/plain", documentationText);
     const abi = AbiCoder.defaultAbiCoder();
-    function agreementHash(manifestHash, productAddress = bond.target) {
+    function agreementHash(documentationHash, productAddress = bond.target) {
         const payloadHash = keccak256(abi.encode(["address", "address", TERMS_TYPE, PERIOD_TYPE + "[]"],
             [productAddress, issuer.address, terms, couponPeriods]));
         const economicTermsHash = keccak256(abi.encode(["bytes32", "bytes32"],
             [payloadHash, keccak256(toUtf8Bytes(termsText))]));
         return keccak256(abi.encode(["bytes32", "bytes32", "address", "address"],
-            [economicTermsHash, manifestHash, token.target, payment.target]));
+            [economicTermsHash, documentationHash, token.target, payment.target]));
     }
-    const offeredTermsHash = agreementHash(keccak256(toUtf8Bytes(manifestText)));
+    const offeredTermsHash = agreementHash(keccak256(toUtf8Bytes(documentationText)));
     await payment.setProductAuthorized(bond.target, true);
     await cash.transfer(issuer.address, 100_000n);
     await cash.transfer(buyer.address, 100_000n);
@@ -131,7 +126,7 @@ export async function deployFixedRateBondDemo() {
 
     // Confirmation and cancellation repeat the original offer, prefixed with its generated ID.
     async function tradeArguments(initialSettlementData = "") {
-        const tradeData = encodeBondTradeData(manifest.target, offeredTermsHash);
+        const tradeData = encodeBondTradeData(documentation.target, offeredTermsHash);
         return [await bond.tradeId(), issuer.address, buyer.address, tradeData,
             -terms.initialAggregateAmount, await bond.settlementAmount(), initialSettlementData];
     }
@@ -142,5 +137,5 @@ export async function deployFixedRateBondDemo() {
     }
     return { ethers, operator, issuer, buyer, outsider, clients, registry, cash, token, payment,
         factory, bondLib, bond, issuerDesk, terms, couponPeriods, definitionId, definitionVersion, requestId: requested.tradeRequestId,
-        termsResource, issuanceConditions, manifest, agreementHash, offeredTermsHash, agree, tradeArguments, payload, requestedTerms };
+        termsResource, documentation, documentationText, agreementHash, offeredTermsHash, agree, tradeArguments, payload, requestedTerms };
 }

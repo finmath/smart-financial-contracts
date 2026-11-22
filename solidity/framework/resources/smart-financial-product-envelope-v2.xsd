@@ -28,8 +28,8 @@
                                     <xs:attribute name="mediaType" type="xs:string" use="required"/>
                                 </xs:complexType>
                             </xs:element>
-                            <!-- Present after the issuer has selected a manifest at trade inception. -->
-                            <xs:element name="LegalDocuments" minOccurs="0">
+                            <!-- The first successful offer fixes the product's legal documentation. -->
+                            <xs:element name="LegalDocumentation" minOccurs="0" maxOccurs="1">
                                 <xs:complexType>
                                     <xs:attribute name="href" type="xs:anyURI" use="required"/>
                                     <xs:attribute name="integrity" type="spf:ContentIntegrity" use="required"/>

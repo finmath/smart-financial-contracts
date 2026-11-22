@@ -143,7 +143,7 @@ contract FixedRateBond is FixedRateBondConventions, AbstractProduct, DemoAssetLo
     /// @notice Commitment to the complete tuple for the current ERC-6123 trade ID.
     bytes32 public tradeInception;
 
-    /// @dev Distinguishes successive offers on this bond, including a return to an earlier manifest.
+    /// @dev Distinguishes successive offers on this bond even if all offer terms are repeated.
     uint256 private _replacementCount;
 
     /// @notice Delivery and repayment progress; a failed escrow attempt does not change it.
@@ -247,10 +247,11 @@ contract FixedRateBond is FixedRateBondConventions, AbstractProduct, DemoAssetLo
 
     /**
      * @inheritdoc ISDCTrade
-     * @dev tradeData is lowercase, 0x-prefixed hex of abi.encode(manifest, agreementHash).
+     * @dev tradeData is lowercase, 0x-prefixed hex of abi.encode(legalDocumentation, agreementHash).
      *      Both signed amounts use the issuer's perspective. Each field, including the
      *      opaque initial settlement data, is repeated exactly at confirmation or cancellation.
-     *      After cancellation the issuer can propose new terms under a fresh trade ID.
+     *      Each offer uses the legal documentation fixed at first inception. After cancellation
+     *      the issuer can submit another offer under a fresh trade ID.
      */
     function inceptTrade(
         address inceptor, address counterparty, string memory tradeData,
@@ -264,9 +265,9 @@ contract FixedRateBond is FixedRateBondConventions, AbstractProduct, DemoAssetLo
         if (!IClientRegistry(clientRegistry).isEligibleClient(buyer, productDefinitionId)) {
             revert BuyerNotEligible(buyer);
         }
-        (address manifest, bytes32 supplied) = ProductLib.decodeOfferData(tradeData);
-        _setLegalDocuments(manifest);
-        agreedTermsHash = keccak256(abi.encode(economicTermsHash, legalDocumentsHash, assetToken, paymentContract));
+        (address documentation, bytes32 supplied) = ProductLib.decodeOfferData(tradeData);
+        _bindLegalDocumentation(documentation);
+        agreedTermsHash = keccak256(abi.encode(economicTermsHash, legalDocumentationHash, assetToken, paymentContract));
         if (supplied != agreedTermsHash) revert TermsMismatch(agreedTermsHash, supplied);
 
         if (tradeStatus == TradeStatus.Cancelled) ++_replacementCount;
@@ -594,7 +595,7 @@ contract FixedRateBond is FixedRateBondConventions, AbstractProduct, DemoAssetLo
 
     // ------------------------------ Terms ------------------------------ */
 
-    /// @notice Current offer commitment to economics, legal manifest content and settlement contracts. Zero before inception.
+    /// @notice Commitment to the economics, legal documentation and settlement contracts. Zero before first inception.
     function termsHash() public view returns (bytes32) {
         return agreedTermsHash;
     }

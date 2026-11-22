@@ -10,8 +10,7 @@ describe("AbstractProduct common XML envelope", function () {
     const TERMS = '<Document xmlns="urn:icma:xsd:ICMABondDataTaxonomy"><ICMABondDataTaxonomy>'
         + '<DocumentInformation><BDTVersion>2.1.0</BDTVersion></DocumentInformation>'
         + '</ICMABondDataTaxonomy></Document>';
-    const MANIFEST = JSON.stringify([{ role: "conditions", uri: "https://issuer.example/conditions.pdf",
-        contentHash: keccak256(toUtf8Bytes("Example conditions")) }]);
+    const DOCUMENTATION = "Principal is payable at maturity.";
     const TERMS_MEDIA_TYPE = 'application/xml; profile="urn:example:terms&7.3"';
     const TYPE_ATTRIBUTES_NOTE = 'type="CouponNote" typeVersion="7.3.0"';
     const TYPE_ATTRIBUTES_FUND = 'type="Equity &amp; &quot;Income&quot; &lt;Fund&gt;" typeVersion="2.4&amp;&quot;beta&quot;&lt;1&gt;"';
@@ -67,9 +66,9 @@ describe("AbstractProduct common XML envelope", function () {
             expect(await product.productRegistry()).to.equal(registry.address);
             expect(await product.productProvider()).to.equal(provider.address);
             expect(await product.productDefinitionVersion()).to.equal(42n);
-            expect(await product.legalDocumentsManifest()).to.equal(ZeroAddress);
-            expect(await product.legalDocumentsHash()).to.equal(ZeroHash);
-            expect(await product.legalDocumentsURI()).to.equal("");
+            expect(await product.legalDocumentation()).to.equal(ZeroAddress);
+            expect(await product.legalDocumentationHash()).to.equal(ZeroHash);
+            expect(await product.legalDocumentationURI()).to.equal("");
         }
         for (const getter of ["productRegistry()(address)", "productFactory()(address)",
             "productProvider()(address)", "productDefinitionId()(bytes32)", "productDefinitionVersion()(uint256)"]) {
@@ -78,22 +77,24 @@ describe("AbstractProduct common XML envelope", function () {
         expect(noteXml).not.to.contain('typeVersion="42"');
         for (const xml of [noteXml, fundXml]) {
             expect(xml).to.contain(`<ProductTermsTemplate ${TERMS_PROFILE} `);
-            expect(xml).not.to.contain("<LegalDocuments");
+            expect(xml).not.to.contain("<LegalDocumentation");
             expect(xml).not.to.contain("ProductDocumentationTemplate");
         }
     });
 
-    it("includes the technical terms and renders the offered on-chain manifest with its captured digest", async function () {
-        const manifest = await deployResource(keccak256(toUtf8Bytes("legal-manifest")), "application/json", MANIFEST);
-        const digest = keccak256(toUtf8Bytes(MANIFEST));
-        const xml = await library.productStateXml(terms.target, manifest.target, digest, "CouponNote", "7.3.0");
+    it("includes the technical terms and one reference to the finalized legal documentation", async function () {
+        const documentation = await deployResource(keccak256(toUtf8Bytes("legal-documentation")), "text/plain", DOCUMENTATION);
+        const digest = keccak256(toUtf8Bytes(DOCUMENTATION));
+        const xml = await library.productStateXml(terms.target, documentation.target, digest, "CouponNote", "7.3.0");
         expect(await terms.resourceType()).to.equal(TERMS_TYPE);
         expect(await terms.mediaType()).to.equal(TERMS_MEDIA_TYPE);
         expect(xml).to.contain(`<ProductTermsTemplate ${TERMS_PROFILE} `
             + 'mediaType="application/xml; profile=&quot;urn:example:terms&amp;7.3&quot;">');
         expect(xml).to.contain(`<xi:include href="${await terms.web3Url()}" parse="xml" `
             + `evmstate:integrity="keccak256-${keccak256(toUtf8Bytes(TERMS))}"/>`);
-        expect(xml).to.contain(`<LegalDocuments href="${await manifest.web3Url()}" integrity="keccak256-${digest}"/>`);
+        expect(xml.match(/<LegalDocumentation\b[^>]*\/>/g)).to.deep.equal([
+            `<LegalDocumentation href="${await documentation.web3Url()}" integrity="keccak256-${digest}"/>`
+        ]);
         expect(xml).not.to.contain("<Document xmlns=");
         expect(xml).not.to.contain("<xsl:stylesheet");
         // The opaque on-chain resource type remains queryable, but is not an XML profile attribute.

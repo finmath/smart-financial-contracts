@@ -122,9 +122,9 @@ library FixedRateBondLib {
     error UnsupportedStateVersion();
 
     /// @notice Revision of stored bond state and its versioned payment-oracle configuration.
-    /// @dev The terms template is finalized and each offer or revision of the legal manifest
-    ///      increments localVersion. External counters remain included after confirmation so the
-    ///      aggregate can never decrease.
+    /// @dev The terms template is finalized and each trade inception increments localVersion.
+    ///      The first inception fixes the legal documentation. External counters remain included
+    ///      after confirmation so the aggregate can never decrease.
     ///      Live token diagnostics (assetLockStatus) are outside that profile; consumers must
     ///      not use this witness for such bindings. The backend rejects those tuple bindings.
     ///      Unversioned dependencies make the witness unavailable rather than risk stale reuse.

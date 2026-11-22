@@ -42,12 +42,12 @@ abstract contract AbstractProduct is IProduct, IXMLRepresentableState {
     /// @inheritdoc IProduct
     address public immutable override productTermsTemplate;
 
-    // ------------------------------ Offer State ------------------------------ */
+    // ------------------------------ Legal Documentation ------------------------------ */
 
     /// @inheritdoc IProduct
-    address public override legalDocumentsManifest;
+    address public override legalDocumentation;
     /// @inheritdoc IProduct
-    bytes32 public override legalDocumentsHash;
+    bytes32 public override legalDocumentationHash;
 
     // ------------------------------ Custom Errors ------------------------------ */
 
@@ -58,10 +58,13 @@ abstract contract AbstractProduct is IProduct, IXMLRepresentableState {
     error ZeroHash(string field);
 
     /// @notice The supplied contract must implement ITextResource and expose a nonzero finalized digest.
-    error InvalidLegalDocumentsManifest(address manifest);
+    error InvalidLegalDocumentation(address documentation);
 
-    /// @notice The manifest must be finalized before it can be offered.
-    error ManifestNotFinalized(address manifest);
+    /// @notice The legal documentation must be finalized before the first offer.
+    error LegalDocumentationNotFinalized(address documentation);
+
+    /// @notice Further offers on this product must use its original legal documentation.
+    error LegalDocumentationAlreadySet(address existing, address supplied);
 
     // ------------------------------ Constructor ------------------------------ */
 
@@ -81,15 +84,20 @@ abstract contract AbstractProduct is IProduct, IXMLRepresentableState {
         productTermsTemplate = common.productTermsTemplate;
     }
 
-    /// @dev The concrete product authorizes the issuer and enforces offer lifecycle transitions.
-    function _setLegalDocuments(address manifest) internal {
-        legalDocumentsHash = ProductLib.manifestHash(manifest);
-        legalDocumentsManifest = manifest;
+    /// @dev Bind one resource and its hash for the lifetime of this product, including after a canceled offer.
+    function _bindLegalDocumentation(address documentation) internal {
+        address existing = legalDocumentation;
+        if (existing == address(0)) {
+            legalDocumentationHash = ProductLib.legalDocumentationHash(documentation);
+            legalDocumentation = documentation;
+        } else if (documentation != existing) {
+            revert LegalDocumentationAlreadySet(existing, documentation);
+        }
     }
 
     /// @inheritdoc IProduct
-    function legalDocumentsURI() external view override returns (string memory) {
-        return ProductLib.manifestURI(legalDocumentsManifest);
+    function legalDocumentationURI() external view override returns (string memory) {
+        return ProductLib.legalDocumentationURI(legalDocumentation);
     }
 
     // ------------------------------ XML View ------------------------------ */
@@ -97,7 +105,7 @@ abstract contract AbstractProduct is IProduct, IXMLRepresentableState {
     /// @inheritdoc IXMLRepresentableState
     function stateXmlTemplate() external view override returns (string memory) {
         (string memory name, string memory version) = _productType();
-        return ProductLib.productStateXml(productTermsTemplate, legalDocumentsManifest, legalDocumentsHash, name, version);
+        return ProductLib.productStateXml(productTermsTemplate, legalDocumentation, legalDocumentationHash, name, version);
     }
 
     /// @dev Product-type schema identity; independent of a registry's productDefinitionVersion.

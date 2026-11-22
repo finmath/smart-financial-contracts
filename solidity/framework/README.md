@@ -75,8 +75,8 @@ must use the ABI of the deployed resource.
 Deploy `ProductDefinitionRegistry(clientRegistryAddress)`. Its administrative
 owner follows `ClientRegistry.owner()`, including ownership transfers. The
 administrator versions each definition as a pair consisting of its product
-factory and finalized XML terms template. Providers can use different legal
-documents when offering products created from the same definition revision.
+factory and finalized XML terms template. Each issued product can use its own
+legal documentation, even when several products share a definition revision.
 
 An active client calls `createTradingContract()` on the factory returned by
 `registry.tradingContractFactory()`. Applications use
@@ -105,8 +105,8 @@ The following workflow shows a buyer approaching an issuer.
    its trading contract's `issueProduct(id, version, productPayload)`. A fulfilled
    request points to this instance. A newly created bond is still `Inactive`.
 4. The issuer makes an offer through the bond's ERC-6123 `inceptTrade` method.
-   Its `tradeData` contains the finalized manifest address and agreement hash.
-   The buyer reviews the documents and economics, then calls `confirmTrade` with
+   Its `tradeData` contains the address of the finalized legal documentation
+   and the agreement hash. The buyer reviews the text and economics, then calls `confirmTrade` with
    the generated trade ID and all six original inception fields. Confirmation
    fixes the agreement and enables delivery.
 
@@ -118,39 +118,38 @@ Deployments using the earlier registry keep their original addresses and state.
 Applications integrating a new deployment should discover its trading factory and
 read each request at the recipient's trading address.
 
-### Legal documents at agreement
+### Legal documentation for an issued product
 
-Publish and finalize a `TextResource` containing the manifest once. The same
-address can be used for any number of offers. Each entry in the demo manifest
-identifies a document by role, URI and content hash. Standard terms can live
-in reusable on-chain resources, and private annexes can use access-controlled
-locations. The manifest itself is publicly readable on a public chain.
+The issuer publishes the legal text in a single finalized `TextResource`.
+The first successful `inceptTrade` records that resource's address and content
+hash for the lifetime of the product. Several issued products can reuse the
+same resource. The text is publicly readable on a public chain.
 
-At inception the bond checks the manifest's `ITextResource` interface and
-finalization, then records its address and content hash. Applications can read
-`legalDocumentsManifest()`, `legalDocumentsHash()` and `legalDocumentsURI()`.
-To verify an offer, hash the exact bytes from the manifest's `content()` with
-Keccak-256, check them against the recorded hash, and verify the documents
-referenced in those bytes.
+Applications can read the resource address from `legalDocumentation()`, its
+recorded hash from `legalDocumentationHash()` and its URI from
+`legalDocumentationURI()`. To verify the text, read the resource's `content()`,
+compute Keccak-256 over those exact bytes and compare it with the recorded hash.
 
 The issuer's application prepares the agreement hash as
-`keccak256(abi.encode(economicTermsHash, legalDocumentsHash, assetToken, paymentContract))`,
-using the finalized manifest's content hash for `legalDocumentsHash`. It encodes
-the manifest address and agreement hash together as `tradeData`. In ethers, use
-`AbiCoder.defaultAbiCoder().encode(["address", "bytes32"], [manifestAddress, agreementHash])`.
+`keccak256(abi.encode(economicTermsHash, legalDocumentationHash, assetToken, paymentContract))`,
+using the finalized resource's content hash for `legalDocumentationHash`. It
+encodes the resource address and agreement hash together as `tradeData`. In ethers, use
+`AbiCoder.defaultAbiCoder().encode(["address", "bytes32"], [legalDocumentationAddress, agreementHash])`.
 The issuer supplies the negative aggregate nominal position and the positive
 issue-price payment. `TradeIncepted` emits the generated trade ID and the original
 fields, including the initial settlement data.
 
 To revise a pending offer, the issuer first calls `cancelTrade` with its ID and
 exact inception fields. Once the cancellation succeeds, the issuer can call
-`inceptTrade` again on the same bond. Each new offer receives a fresh ID, even
-when its manifest and economics match a withdrawn offer. The issuer can authorize
+`inceptTrade` again on the same bond using the exact same legal documentation
+address. Each new offer receives a fresh ID. A different legal documentation
+resource requires a new product instance. The issuer can authorize
 a bond operator to offer or withdraw, and the buyer can authorize one to confirm.
 
-Before the first offer the product reports a zero manifest address and hash.
-The [v2 product XML envelope](resources/smart-financial-product-envelope-v2.xsd)
-includes `LegalDocuments` with `href` and `integrity` once the issuer selects a manifest.
+Before the first successful offer the product reports a zero resource address
+and hash. From that offer onward, its XML contains one `LegalDocumentation`
+element with the resource URI in `href` and the content hash in `integrity`.
+See the [v2 product XML envelope](resources/smart-financial-product-envelope-v2.xsd).
 
 ## History and licensing
 

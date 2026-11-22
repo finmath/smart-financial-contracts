@@ -3,7 +3,7 @@ pragma solidity ^0.8.24;
 
 /**
  * @title IProduct
- * @notice Exposes the product's deployment context and offered legal manifest.
+ * @notice Exposes the product's deployment context and its legal documentation.
  *
  * @dev The registry fixes the common deployment context at construction. Concrete
  *      products define their counterparties and agreement lifecycle.
@@ -31,14 +31,14 @@ interface IProduct {
     /// @notice Returns the product terms template resource.
     function productTermsTemplate() external view returns (address);
 
-    // ------------------------------ Offer State ------------------------------ */
+    // ------------------------------ Legal Documentation ------------------------------ */
 
-    /// @notice Finalized text resource selected at trade inception; zero before the first offer.
-    function legalDocumentsManifest() external view returns (address);
+    /// @notice Finalized text resource fixed by the first successful trade inception, or zero before it.
+    function legalDocumentation() external view returns (address);
 
-    /// @notice Keccak-256 of the manifest bytes captured at trade inception; zero before the first offer.
-    function legalDocumentsHash() external view returns (bytes32);
+    /// @notice Keccak-256 of the legal documentation bytes captured at first inception, or zero before it.
+    function legalDocumentationHash() external view returns (bytes32);
 
-    /// @notice Canonical web3 URI for the offered manifest, or the empty string before an offer.
-    function legalDocumentsURI() external view returns (string memory);
+    /// @notice Canonical web3 URI of the legal documentation, or an empty string before first inception.
+    function legalDocumentationURI() external view returns (string memory);
 }
