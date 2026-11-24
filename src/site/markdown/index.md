@@ -1,10 +1,15 @@
-# finmath smart derivative contracts
+# Smart Financial Contracts
 
 ****************************************
 
-**Algorithms and methodologies related to smart derivative contracts.**
+**Smart financial products, reference contracts and valuation tools.**
 
 ****************************************
+
+The [Smart Product Framework](https://github.com/finmath/smart-financial-contracts/tree/main/solidity/framework)
+provides reusable product infrastructure and a fixed-rate bond reference implementation.
+The Solidity packages are grouped under `solidity/`. The Java valuation service retains
+its build paths and published artifact names.
 
 ## Introduction
 

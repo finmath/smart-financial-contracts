@@ -33,7 +33,7 @@ interface ILockingContract {
      * @param to The address of the buyer.
      * @param keyEncryptedSeller Encryption (or, alternatively, hash) of the key that can be used by the seller to (re-)claim the token.
      */
-    event TransferIncepted(bytes32 id, int amount, address from, address to, string keyEncryptedSeller);
+    event TransferIncepted(bytes32 indexed id, int amount, address indexed from, address indexed to, string keyEncryptedSeller);
 
     /**
      * @dev Emitted  when the transfer for the token is incepted
@@ -43,21 +43,21 @@ interface ILockingContract {
      * @param to The address of the buyer.
      * @param keyEncryptedBuyer Encryption (or, alternatively, hash) of the key that can be used by the buyer to claim the token.
      */
-    event TransferConfirmed(bytes32 id, int amount, address from, address to, string keyEncryptedBuyer);
+    event TransferConfirmed(bytes32 indexed id, int amount, address indexed from, address indexed to, string keyEncryptedBuyer);
 
     /**
      * @dev Emitted when the token was successfully claimed (forwarded to the buyer).
      * @param id the trade ID
      * @param key the key that was used to claim the asset
      */
-    event TokenClaimed(bytes32 id, string key);
+    event TokenClaimed(bytes32 indexed id, string key);
 
     /**
      * @dev Emitted when the token was re-claimed (back to seller).
      * @param id the trade ID
      * @param key the key that was used to claim the asset
      */
-    event TokenReclaimed(bytes32 id, string key);
+    event TokenReclaimed(bytes32 indexed id, string key);
 
     /*------------------------------------------- FUNCTIONALITY ---------------------------------------------------------------------------------------*/
 

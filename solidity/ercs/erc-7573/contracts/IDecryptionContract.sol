@@ -31,14 +31,14 @@ interface IDecryptionContract {
      * @param keyEncryptedSuccess Encryption of the key that is emitted upon success.
      * @param keyEncryptedFailure Encryption of the key that is emitted upon failure.
      */
-    event TransferIncepted(bytes32 id, int amount, address from, address to, string keyEncryptedSuccess, string keyEncryptedFailure);
+    event TransferIncepted(bytes32 indexed id, int amount, address indexed from, address indexed to, string keyEncryptedSuccess, string keyEncryptedFailure);
 
     /**
      * @dev Emitted when a transfer has been performed with a success or failure.
      * @param id the trade ID.
      * @param encryptedKey The encrypted key associated with the transaction status.
      */
-    event TransferKeyRequested(bytes32 id, string encryptedKey);
+    event TransferKeyRequested(bytes32 indexed id, string encryptedKey);
 
     /**
      * @dev Emitted when the decrypted key has been obtained.
@@ -46,7 +46,7 @@ interface IDecryptionContract {
      * @param success a boolean indicating the status. True: success. False: failure.
      * @param key the decrypted key.
      */
-    event TransferKeyReleased(bytes32 id, bool success, string key);
+    event TransferKeyReleased(bytes32 indexed id, bool success, string key);
 
     /*------------------------------------------- FUNCTIONALITY ---------------------------------------------------------------------------------------*/
 

@@ -1,0 +1,171 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  FX Spot Trade state vocabulary 1.0.0. Validate the SmartFinancialProduct
+  envelope separately. This schema accepts both empty ERC-8100 placeholders
+  and rendered values; consumers also check bindings and rendering context.
+  The canonical evmstate schema is supplied by representable-contract-state.
+-->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:fx="urn:example:fx-spot-trade"
+           xmlns:evmstate="urn:evm:state:1.0"
+           targetNamespace="urn:example:fx-spot-trade"
+           elementFormDefault="qualified"
+           attributeFormDefault="unqualified"
+           version="1.0.0">
+    <xs:import namespace="urn:evm:state:1.0"/>
+
+    <xs:simpleType name="Placeholder">
+        <xs:restriction base="xs:token">
+            <xs:enumeration value=""/>
+        </xs:restriction>
+    </xs:simpleType>
+    <xs:simpleType name="Address">
+        <xs:restriction base="xs:string">
+            <xs:pattern value="0x[0-9a-fA-F]{40}"/>
+        </xs:restriction>
+    </xs:simpleType>
+    <xs:simpleType name="Phase">
+        <xs:restriction base="xs:unsignedByte">
+            <xs:minInclusive value="0"/>
+            <xs:maxInclusive value="3"/>
+        </xs:restriction>
+    </xs:simpleType>
+    <xs:simpleType name="Int256">
+        <xs:restriction base="xs:integer">
+            <xs:minInclusive value="-57896044618658097711785492504343953926634992332820282019728792003956564819968"/>
+            <xs:maxInclusive value="57896044618658097711785492504343953926634992332820282019728792003956564819967"/>
+        </xs:restriction>
+    </xs:simpleType>
+    <xs:simpleType name="AddressOrPlaceholder">
+        <xs:union memberTypes="fx:Address fx:Placeholder"/>
+    </xs:simpleType>
+    <xs:simpleType name="PhaseOrPlaceholder">
+        <xs:union memberTypes="fx:Phase fx:Placeholder"/>
+    </xs:simpleType>
+    <xs:simpleType name="Int256OrPlaceholder">
+        <xs:union memberTypes="fx:Int256 fx:Placeholder"/>
+    </xs:simpleType>
+    <xs:simpleType name="PartyRole">
+        <xs:restriction base="xs:string">
+            <xs:enumeration value="A"/>
+            <xs:enumeration value="B"/>
+        </xs:restriction>
+    </xs:simpleType>
+    <xs:simpleType name="TokenRole">
+        <xs:restriction base="xs:string">
+            <xs:enumeration value="base"/>
+            <xs:enumeration value="quote"/>
+        </xs:restriction>
+    </xs:simpleType>
+
+    <xs:attributeGroup name="Binding">
+        <xs:attribute ref="evmstate:call"/>
+        <xs:attribute ref="evmstate:format"/>
+    </xs:attributeGroup>
+    <xs:complexType name="StringValue">
+        <xs:simpleContent>
+            <xs:extension base="xs:string">
+                <xs:attributeGroup ref="fx:Binding"/>
+            </xs:extension>
+        </xs:simpleContent>
+    </xs:complexType>
+    <xs:complexType name="AddressValue">
+        <xs:simpleContent>
+            <xs:extension base="fx:AddressOrPlaceholder">
+                <xs:attributeGroup ref="fx:Binding"/>
+            </xs:extension>
+        </xs:simpleContent>
+    </xs:complexType>
+    <xs:complexType name="PhaseValue">
+        <xs:simpleContent>
+            <xs:extension base="fx:PhaseOrPlaceholder">
+                <xs:attributeGroup ref="fx:Binding"/>
+            </xs:extension>
+        </xs:simpleContent>
+    </xs:complexType>
+    <xs:complexType name="PartyValue">
+        <xs:simpleContent>
+            <xs:extension base="fx:AddressValue">
+                <xs:attribute name="role" type="fx:PartyRole" use="required"/>
+            </xs:extension>
+        </xs:simpleContent>
+    </xs:complexType>
+    <xs:complexType name="TokenValue">
+        <xs:simpleContent>
+            <xs:extension base="fx:AddressValue">
+                <xs:attribute name="role" type="fx:TokenRole" use="required"/>
+            </xs:extension>
+        </xs:simpleContent>
+    </xs:complexType>
+    <xs:complexType name="AmountValue">
+        <xs:simpleContent>
+            <xs:extension base="fx:Int256OrPlaceholder">
+                <xs:attribute name="unit" type="xs:string" use="required" fixed="smallest-token-unit"/>
+                <xs:attributeGroup ref="fx:Binding"/>
+            </xs:extension>
+        </xs:simpleContent>
+    </xs:complexType>
+    <xs:complexType name="BaseAmountValue">
+        <xs:simpleContent>
+            <xs:extension base="fx:AmountValue">
+                <xs:attribute name="token" type="xs:string" use="required" fixed="base"/>
+            </xs:extension>
+        </xs:simpleContent>
+    </xs:complexType>
+    <xs:complexType name="QuoteAmountValue">
+        <xs:simpleContent>
+            <xs:extension base="fx:AmountValue">
+                <xs:attribute name="token" type="xs:string" use="required" fixed="quote"/>
+            </xs:extension>
+        </xs:simpleContent>
+    </xs:complexType>
+
+    <xs:element name="FxSpotTrade">
+        <xs:complexType>
+            <xs:sequence>
+                <xs:element name="Lifecycle">
+                    <xs:complexType>
+                        <xs:sequence>
+                            <xs:element name="TradeId" type="fx:StringValue"/>
+                            <xs:element name="Phase" type="fx:PhaseValue"/>
+                            <xs:element name="Inceptor" type="fx:AddressValue"/>
+                        </xs:sequence>
+                    </xs:complexType>
+                </xs:element>
+                <xs:element name="Parties">
+                    <xs:complexType>
+                        <xs:sequence>
+                            <xs:element name="Party" type="fx:PartyValue" minOccurs="2" maxOccurs="2"/>
+                        </xs:sequence>
+                    </xs:complexType>
+                </xs:element>
+                <xs:element name="Tokens">
+                    <xs:complexType>
+                        <xs:sequence>
+                            <xs:element name="Token" type="fx:TokenValue" minOccurs="2" maxOccurs="2"/>
+                        </xs:sequence>
+                    </xs:complexType>
+                </xs:element>
+                <xs:element name="Terms">
+                    <xs:complexType>
+                        <xs:sequence>
+                            <xs:element name="Position" type="fx:BaseAmountValue"/>
+                            <xs:element name="PaymentAmount" type="fx:QuoteAmountValue"/>
+                            <xs:element name="TradeData" type="fx:StringValue"/>
+                            <xs:element name="InitialSettlementData" type="fx:StringValue"/>
+                        </xs:sequence>
+                        <xs:attribute name="view" type="xs:string" use="required" fixed="inceptor"/>
+                    </xs:complexType>
+                </xs:element>
+            </xs:sequence>
+        </xs:complexType>
+        <xs:unique name="DistinctPartyRoles">
+            <xs:selector xpath="fx:Parties/fx:Party"/>
+            <xs:field xpath="@role"/>
+        </xs:unique>
+        <xs:unique name="DistinctTokenRoles">
+            <xs:selector xpath="fx:Tokens/fx:Token"/>
+            <xs:field xpath="@role"/>
+        </xs:unique>
+    </xs:element>
+</xs:schema>
