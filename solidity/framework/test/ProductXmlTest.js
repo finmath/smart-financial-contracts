@@ -1,23 +1,20 @@
 import hre from "hardhat";
 import { expect } from "chai";
-import { ZeroHash, keccak256, toUtf8Bytes } from "ethers";
+import { ZeroAddress, ZeroHash, keccak256, toUtf8Bytes } from "ethers";
 
 describe("AbstractProduct common XML envelope", function () {
     let ethers, deployer, registry, provider;
-    let library, terms, documentation, note, fund;
+    let library, terms, note, fund;
 
     const TERMS_TYPE = keccak256(toUtf8Bytes("example:custom-product-terms:7.3"));
-    const DOCUMENTATION_TYPE = keccak256(toUtf8Bytes("example:custom-product-documentation:2.4"));
     const TERMS = '<Document xmlns="urn:icma:xsd:ICMABondDataTaxonomy"><ICMABondDataTaxonomy>'
         + '<DocumentInformation><BDTVersion>2.1.0</BDTVersion></DocumentInformation>'
         + '</ICMABondDataTaxonomy></Document>';
-    const DOCUMENTATION = '<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="1.0"/>';
+    const DOCUMENTATION = "Principal is payable at maturity.";
     const TERMS_MEDIA_TYPE = 'application/xml; profile="urn:example:terms&7.3"';
-    const DOCUMENTATION_MEDIA_TYPE = 'application/xslt+xml; profile="urn:example:docs&2.4"';
     const TYPE_ATTRIBUTES_NOTE = 'type="CouponNote" typeVersion="7.3.0"';
     const TYPE_ATTRIBUTES_FUND = 'type="Equity &amp; &quot;Income&quot; &lt;Fund&gt;" typeVersion="2.4&amp;&quot;beta&quot;&lt;1&gt;"';
     const TERMS_PROFILE = 'type="ICMABondDataTaxonomy" version="2.1.0" namespace="urn:icma:xsd:ICMABondDataTaxonomy"';
-    const DOCUMENTATION_PROFILE = 'type="XSLT" formatVersion="1.0"';
 
     async function deployResource(type, mediaType, content) {
         const bytes = toUtf8Bytes(content);
@@ -37,8 +34,7 @@ describe("AbstractProduct common XML envelope", function () {
             productProvider: provider.address,
             productDefinitionId: keccak256(toUtf8Bytes("example:definition")),
             productDefinitionVersion: 42,
-            productTermsTemplate: termsAddress,
-            productDocumentationTemplate: documentation.target
+            productTermsTemplate: termsAddress
         });
         await product.waitForDeployment();
         return product;
@@ -50,7 +46,6 @@ describe("AbstractProduct common XML envelope", function () {
         library = await (await ethers.getContractFactory("ProductLib")).deploy();
         await library.waitForDeployment();
         terms = await deployResource(TERMS_TYPE, TERMS_MEDIA_TYPE, TERMS);
-        documentation = await deployResource(DOCUMENTATION_TYPE, DOCUMENTATION_MEDIA_TYPE, DOCUMENTATION);
         note = await deployProduct("ProductXmlNoteMock");
         fund = await deployProduct("ProductXmlFundMock");
     });
@@ -59,8 +54,8 @@ describe("AbstractProduct common XML envelope", function () {
         const noteXml = await note.stateXmlTemplate();
         const fundXml = await fund.stateXmlTemplate();
         const prefix = '<?xml version="1.0" encoding="UTF-8"?><SmartFinancialProduct '
-            + 'xmlns="urn:smart-product-framework:financial-product:1.0" '
-            + 'xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:evmstate="urn:evm:state:1.0" schemaVersion="1.0.0" ';
+            + 'xmlns="urn:smart-product-framework:financial-product:2.0" '
+            + 'xmlns:xi="http://www.w3.org/2001/XInclude" xmlns:evmstate="urn:evm:state:1.0" schemaVersion="2.0.0" ';
 
         expect(noteXml).to.contain(prefix + TYPE_ATTRIBUTES_NOTE + ">");
         expect(fundXml).to.contain(prefix + TYPE_ATTRIBUTES_FUND + ">");
@@ -71,6 +66,9 @@ describe("AbstractProduct common XML envelope", function () {
             expect(await product.productRegistry()).to.equal(registry.address);
             expect(await product.productProvider()).to.equal(provider.address);
             expect(await product.productDefinitionVersion()).to.equal(42n);
+            expect(await product.legalDocumentation()).to.equal(ZeroAddress);
+            expect(await product.legalDocumentationHash()).to.equal(ZeroHash);
+            expect(await product.legalDocumentationURI()).to.equal("");
         }
         for (const getter of ["productRegistry()(address)", "productFactory()(address)",
             "productProvider()(address)", "productDefinitionId()(bytes32)", "productDefinitionVersion()(uint256)"]) {
@@ -79,23 +77,24 @@ describe("AbstractProduct common XML envelope", function () {
         expect(noteXml).not.to.contain('typeVersion="42"');
         for (const xml of [noteXml, fundXml]) {
             expect(xml).to.contain(`<ProductTermsTemplate ${TERMS_PROFILE} `);
-            expect(xml).to.contain(`<ProductDocumentationTemplate ${DOCUMENTATION_PROFILE} `);
+            expect(xml).not.to.contain("<LegalDocumentation");
+            expect(xml).not.to.contain("ProductDocumentationTemplate");
         }
     });
 
-    it("combines fixed profile metadata with actual media types, URLs and integrity hashes", async function () {
-        const xml = await note.stateXmlTemplate();
+    it("includes the technical terms and one reference to the finalized legal documentation", async function () {
+        const documentation = await deployResource(keccak256(toUtf8Bytes("legal-documentation")), "text/plain", DOCUMENTATION);
+        const digest = keccak256(toUtf8Bytes(DOCUMENTATION));
+        const xml = await library.productStateXml(terms.target, documentation.target, digest, "CouponNote", "7.3.0");
         expect(await terms.resourceType()).to.equal(TERMS_TYPE);
-        expect(await documentation.resourceType()).to.equal(DOCUMENTATION_TYPE);
         expect(await terms.mediaType()).to.equal(TERMS_MEDIA_TYPE);
-        expect(await documentation.mediaType()).to.equal(DOCUMENTATION_MEDIA_TYPE);
         expect(xml).to.contain(`<ProductTermsTemplate ${TERMS_PROFILE} `
             + 'mediaType="application/xml; profile=&quot;urn:example:terms&amp;7.3&quot;">');
         expect(xml).to.contain(`<xi:include href="${await terms.web3Url()}" parse="xml" `
             + `evmstate:integrity="keccak256-${keccak256(toUtf8Bytes(TERMS))}"/>`);
-        expect(xml).to.contain(`<ProductDocumentationTemplate ${DOCUMENTATION_PROFILE} `
-            + 'mediaType="application/xslt+xml; profile=&quot;urn:example:docs&amp;2.4&quot;" '
-            + `href="${await documentation.web3Url()}" integrity="keccak256-${keccak256(toUtf8Bytes(DOCUMENTATION))}"/>`);
+        expect(xml.match(/<LegalDocumentation\b[^>]*\/>/g)).to.deep.equal([
+            `<LegalDocumentation href="${await documentation.web3Url()}" integrity="keccak256-${digest}"/>`
+        ]);
         expect(xml).not.to.contain("<Document xmlns=");
         expect(xml).not.to.contain("<xsl:stylesheet");
         // The opaque on-chain resource type remains queryable, but is not an XML profile attribute.

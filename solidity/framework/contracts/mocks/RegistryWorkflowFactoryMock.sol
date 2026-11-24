@@ -17,10 +17,6 @@ contract RegistryWorkflowFactoryMock is AbstractProductFactory {
         return keccak256("TEST:REGISTRY:TERMS");
     }
 
-    function productDocumentationTemplateResourceType() external pure override returns (bytes32) {
-        return keccak256("TEST:REGISTRY:DOCUMENTATION");
-    }
-
     function isAcceptedIndicationCategory(bytes32) external pure override returns (bool) {
         return false;
     }

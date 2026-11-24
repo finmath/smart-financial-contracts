@@ -24,6 +24,7 @@ import {IDecryptionContractInceptionCallback} from "@finmath.net/dvp/contracts/I
 
 //will be moved to utils folder from OpenZeppelin v5.0
 import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
 import {ISDCTrade} from "@finmath.net/sdc/contracts/ISDCTrade.sol";
 import {TradeAuthorizable} from "@finmath.net/sdc/contracts/TradeAuthorizable.sol";
 
@@ -54,7 +55,7 @@ contract FixedRateBond is FixedRateBondConventions, AbstractProduct, DemoAssetLo
         Incepted,
         /// @dev Buyer confirmed; the trade is binding.
         Confirmed,
-        /// @dev Cancelled before confirmation (terminal).
+        /// @dev The issuer withdrew the last offer. A new inception receives a fresh ID.
         Cancelled
     }
 
@@ -89,7 +90,7 @@ contract FixedRateBond is FixedRateBondConventions, AbstractProduct, DemoAssetLo
     /// @notice Client-only registry used for eligibility checks.
     address public immutable clientRegistry;
 
-    /// @notice Deployment-time commitment to immutable economics and finalized resources.
+    /// @notice Deployment-time commitment to the economics and finalized product terms template.
     bytes32 public immutable economicTermsHash;
 
     /// @notice Aggregate nominal amount at issuance, scaled by amountScale.
@@ -136,11 +137,14 @@ contract FixedRateBond is FixedRateBondConventions, AbstractProduct, DemoAssetLo
     /// @notice Contractual maturity as a Unix timestamp; set only during construction.
     uint64 public maturityDate;
 
-    /// @notice Terms hash frozen at inception.
+    /// @notice Hash of the latest offer. Zero before inception and fixed after confirmation.
     bytes32 public agreedTermsHash;
 
-    /// @notice Immutable commitment to the complete ERC-6123 inception tuple.
+    /// @notice Commitment to the complete tuple for the current ERC-6123 trade ID.
     bytes32 public tradeInception;
+
+    /// @dev Distinguishes successive offers on this bond even if all offer terms are repeated.
+    uint256 private _replacementCount;
 
     /// @notice Delivery and repayment progress; a failed escrow attempt does not change it.
     PositionState public positionState;
@@ -243,31 +247,34 @@ contract FixedRateBond is FixedRateBondConventions, AbstractProduct, DemoAssetLo
 
     /**
      * @inheritdoc ISDCTrade
-     * @dev The issuer delivers the negative aggregate nominal position and receives
-     *      the positive issue-price payment. The terms hash and every supplied field
-     *      are frozen at inception; delivery requires buyer confirmation.
+     * @dev tradeData is lowercase, 0x-prefixed hex of abi.encode(legalDocumentation, agreementHash).
+     *      Both signed amounts use the issuer's perspective. Each field, including the
+     *      opaque initial settlement data, is repeated exactly at confirmation or cancellation.
+     *      Each offer uses the legal documentation fixed at first inception. After cancellation
+     *      the issuer can submit another offer under a fresh trade ID.
      */
     function inceptTrade(
         address inceptor, address counterparty, string memory tradeData,
         int256 position, int256 paymentAmount, string memory initialSettlementData
-    ) external override inTradeStatus(TradeStatus.Inactive) nonReentrant returns (string memory) {
+    ) external override nonReentrant returns (string memory id) {
+        if (tradeStatus != TradeStatus.Inactive && tradeStatus != TradeStatus.Cancelled) {
+            revert InvalidTradeStatus(tradeStatus);
+        }
         _requireTradeAuthorization(issuer);
         _requireTradeEconomics(inceptor, counterparty, position, paymentAmount);
         if (!IClientRegistry(clientRegistry).isEligibleClient(buyer, productDefinitionId)) {
             revert BuyerNotEligible(buyer);
         }
-        bytes32 current = termsHash();
-        bytes32 supplied = ProductLib.parseHash(tradeData);
-        if (supplied != current) revert TermsMismatch(current, supplied);
+        (address documentation, bytes32 supplied) = ProductLib.decodeOfferData(tradeData);
+        _bindLegalDocumentation(documentation);
+        agreedTermsHash = keccak256(abi.encode(economicTermsHash, legalDocumentationHash, assetToken, paymentContract));
+        if (supplied != agreedTermsHash) revert TermsMismatch(agreedTermsHash, supplied);
 
-        agreedTermsHash = current;
-        string memory id = tradeId();
-        tradeInception = _tradeCommitment(id, inceptor, counterparty, tradeData,
-            position, paymentAmount, initialSettlementData);
+        if (tradeStatus == TradeStatus.Cancelled) ++_replacementCount;
+        id = tradeId();
+        tradeInception = _tradeCommitment(id, issuer, buyer, tradeData, position, paymentAmount, initialSettlementData);
         _setTradeStatus(TradeStatus.Incepted);
-
         emit TradeIncepted(issuer, buyer, id, tradeData, position, paymentAmount, initialSettlementData);
-        return id;
     }
 
     /**
@@ -280,8 +287,6 @@ contract FixedRateBond is FixedRateBondConventions, AbstractProduct, DemoAssetLo
     ) external override inTradeStatus(TradeStatus.Incepted) nonReentrant {
         _requireTradeAuthorization(buyer);
         _requireTradeTerms(tradeId_, inceptor, counterparty, tradeData, position, paymentAmount, initialSettlementData);
-        bytes32 current = termsHash();
-        if (current != agreedTermsHash) revert TermsMismatch(agreedTermsHash, current);
 
         confirmedAt = uint64(block.timestamp);
         _exchange = AssetExchange(issuer, buyer, uint256(paymentAmount));
@@ -291,8 +296,7 @@ contract FixedRateBond is FixedRateBondConventions, AbstractProduct, DemoAssetLo
 
     /**
      * @inheritdoc ISDCTrade
-     * @dev The issuer or its operator withdraws the exact pending offer. Cancellation
-     *      is terminal and leaves both parties' assets untouched.
+     * @dev The issuer or its operator withdraws the exact pending offer, permanently closing its ID.
      */
     function cancelTrade(
         string memory tradeId_, address inceptor, address counterparty, string memory tradeData,
@@ -311,9 +315,7 @@ contract FixedRateBond is FixedRateBondConventions, AbstractProduct, DemoAssetLo
         if (counterparty != buyer) revert InvalidCounterparty(counterparty);
         uint256 payment = settlementAmount();
         if (initialAggregateAmount > uint256(type(int256).max) || payment > uint256(type(int256).max)
-            || position != -int256(initialAggregateAmount) || paymentAmount != int256(payment)) {
-            revert InvalidAmount();
-        }
+            || position != -int256(initialAggregateAmount) || paymentAmount != int256(payment)) revert InvalidAmount();
     }
 
     function _requireTradeTerms(
@@ -593,16 +595,17 @@ contract FixedRateBond is FixedRateBondConventions, AbstractProduct, DemoAssetLo
 
     // ------------------------------ Terms ------------------------------ */
 
-    /// @notice Trade commitment to economics and the immutable asset/payment contracts.
+    /// @notice Commitment to the economics, legal documentation and settlement contracts. Zero before first inception.
     function termsHash() public view returns (bytes32) {
-        return keccak256(abi.encode(economicTermsHash, assetToken, paymentContract));
+        return agreedTermsHash;
     }
 
-    /// @notice Returns this bond's contract-generated trade identifier, available before inception.
-    /// @dev This bond remains single-use: confirmation or cancellation cannot be followed
-    ///      by another inception.
+    /// @notice Returns the current offer ID. The first ID is the bond address, available before inception.
+    /// @dev Replacement offers append their sequence number, starting with 2.
     function tradeId() public view returns (string memory) {
-        return ProductLib.tradeId(address(this));
+        string memory firstId = ProductLib.tradeId(address(this));
+        if (_replacementCount == 0) return firstId;
+        return string.concat(firstId, "-", Strings.toString(_replacementCount + 1));
     }
 
     // ------------------------------ ERC-7573 asset leg ------------------------------ */
