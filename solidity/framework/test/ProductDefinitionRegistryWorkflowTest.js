@@ -3,11 +3,21 @@ import { expect } from "chai";
 import { keccak256, toUtf8Bytes, MaxUint256, ZeroAddress, ZeroHash } from "ethers";
 import { confirmReviewedClientData } from "./helpers/clientRegistry.js";
 
-describe("ProductDefinitionRegistry retained workflows", function () {
-    let ethers, owner, alice, bob, clients, registry, factory, terms, documentation;
+describe("Product definitions and per-party trading", function () {
+    let ethers, owner, alice, bob, carol, clients, registry, factory, terms;
+    let desks, aliceDesk, bobDesk;
     const LEI = "00000000000000000098";
     const BIC = "DEMOXXXX";
     const ACTIVE = 1n, SUSPENDED = 2n, RETIRED = 3n;
+    const REQUEST = { active: 1n, fulfilled: 2n, withdrawn: 3n, rejected: 4n, expired: 5n };
+    const CLIENT = { active: 2n, suspended: 3n, revoked: 4n };
+
+    async function onboard(client) {
+        await clients.registerClient({ client: client.address, lei: LEI, bic: BIC });
+        await confirmReviewedClientData(clients, client, LEI, BIC);
+        await desks.connect(client).createTradingContract();
+        return ethers.getContractAt("TradingContract", await desks.tradingContractOf(client.address), client);
+    }
 
     async function resource(type, mediaType, text) {
         const content = toUtf8Bytes(text);
@@ -20,12 +30,13 @@ describe("ProductDefinitionRegistry retained workflows", function () {
 
     beforeEach(async function () {
         ({ ethers } = await hre.network.create());
-        [owner, alice, bob] = await ethers.getSigners();
+        [owner, alice, bob, carol] = await ethers.getSigners();
         clients = await (await ethers.getContractFactory("ClientRegistry")).deploy(owner.address);
         await clients.waitForDeployment();
         registry = await (await ethers.getContractFactory("ProductDefinitionRegistry"))
-            .deploy(owner.address, clients.target);
+            .deploy(clients.target);
         await registry.waitForDeployment();
+        desks = await ethers.getContractAt("TradingContractFactory", await registry.tradingContractFactory());
         const library = await (await ethers.getContractFactory("ProductLib")).deploy();
         await library.waitForDeployment();
         factory = await (await ethers.getContractFactory("RegistryWorkflowFactoryMock", {
@@ -33,51 +44,41 @@ describe("ProductDefinitionRegistry retained workflows", function () {
         })).deploy(registry.target);
         await factory.waitForDeployment();
         terms = await resource(await factory.productTermsTemplateResourceType(), "application/xml", "<Terms/>");
-        documentation = await resource(await factory.productDocumentationTemplateResourceType(),
-            "application/xslt+xml", '<xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform" version="1.0"/>');
-        for (const client of [alice, bob]) {
-            await clients.registerClient({ client: client.address, lei: LEI, bic: BIC });
-            await confirmReviewedClientData(clients, client, LEI, BIC);
-        }
+        aliceDesk = await onboard(alice);
+        bobDesk = await onboard(bob);
     });
+
+    function components() {
+        return {
+            productFactory: factory.target,
+            productTermsTemplate: terms.target
+        };
+    }
 
     async function publish(name) {
         const definition = await registry.computeProductDefinitionId(name);
-        await registry.publishProductDefinition({
-            name,
-            productDefinition: {
-                productFactory: factory.target,
-                productTermsTemplate: terms.target,
-                productDocumentationTemplate: documentation.target
-            }
-        });
+        await registry.publishProductDefinition({ name, productDefinition: components() });
         return definition;
     }
 
-    async function eventArgs(transaction, eventName) {
+    async function eventArgs(transaction, contract, eventName) {
         const receipt = await transaction.wait();
         for (const log of receipt.logs) {
-            if (log.address.toLowerCase() !== registry.target.toLowerCase()) continue;
-            const event = registry.interface.parseLog(log);
+            if (log.address.toLowerCase() !== contract.target.toLowerCase()) continue;
+            const event = contract.interface.parseLog(log);
             if (event?.name === eventName) return event.args;
         }
-        throw new Error(`Missing registry event ${eventName}`);
+        throw new Error(`Missing ${eventName} on ${contract.target}`);
     }
 
-    async function request(client, definition) {
-        const transaction = await registry.connect(client).createTradeRequest({
-            productDefinitionId: definition, productPayload: "0x"
-        });
-        return (await eventArgs(transaction, "TradeRequested")).tradeRequestId;
+    async function request(recipient, sender, definition, version = 1n, payload = "0x") {
+        const tx = await recipient.connect(sender).createTradeRequest(definition, version, payload);
+        return (await eventArgs(tx, recipient, "TradeRequested")).tradeRequestId;
     }
 
     async function activeDefinitionIds() {
         return (await registry.getProductDefinitionStates(0, 100))
             .filter(item => item.status === ACTIVE).map(item => item.productDefinitionId);
-    }
-
-    async function activeRequestIds(definition) {
-        return (await registry.getActiveTradeRequests(definition)).map(item => item.tradeRequestId);
     }
 
     it("tracks active definitions through publication, suspension, reactivation and retirement", async function () {
@@ -110,67 +111,190 @@ describe("ProductDefinitionRegistry retained workflows", function () {
             .to.deep.equal([ACTIVE, RETIRED]);
     });
 
-    it("retains known request states while withdrawn, rejected and expired requests cease to be active", async function () {
-        const definition = await publish("Client requests");
-        const aliceRequest = await request(alice, definition);
-        const bobRequest = await request(bob, definition);
-        expect(await activeRequestIds(definition)).to.have.members([aliceRequest, bobRequest]);
-        const requests = await registry.getActiveTradeRequests(definition);
-        expect(requests.map(item => item.request.client)).to.have.members([alice.address, bob.address]);
-        expect(requests.every(item => item.request.status === ACTIVE)).to.equal(true);
+    it("creates one addressable trading contract per active client and follows shared ownership", async function () {
+        expect(aliceDesk.target).not.to.equal(bobDesk.target);
+        expect(await aliceDesk.client()).to.equal(alice.address);
+        expect(await desks.clientOf(bobDesk.target)).to.equal(bob.address);
+        expect(await desks.tradingContractOf(owner.address)).to.equal(ZeroAddress);
+        await expect(desks.connect(alice).createTradingContract())
+            .to.be.revertedWithCustomError(desks, "TradingContractAlreadyExists");
+        await clients.registerClient({ client: carol.address, lei: LEI, bic: BIC });
+        await expect(desks.connect(carol).createTradingContract())
+            .to.be.revertedWithCustomError(desks, "ClientNotActive");
 
-        await expect(registry.connect(bob).withdrawTradeRequest(aliceRequest))
-            .to.be.revertedWithCustomError(registry, "InvalidTradeRequestOwner");
-        await registry.connect(alice).withdrawTradeRequest(aliceRequest);
-        expect(await activeRequestIds(definition)).to.deep.equal([bobRequest]);
-        await registry.rejectTradeRequest(bobRequest);
-        expect(await activeRequestIds(definition)).to.deep.equal([]);
-        expect((await registry.tradeRequestState(aliceRequest)).status).to.equal(3n);
-        expect((await registry.tradeRequestState(bobRequest)).status).to.equal(4n);
-        expect(await registry.productOf(aliceRequest)).to.equal(ZeroAddress);
-
-        const expiring = await request(alice, definition);
-        await registry.setProductDefinitionStatus(definition, RETIRED);
-        expect(await activeRequestIds(definition)).to.deep.equal([]);
-        expect((await registry.tradeRequestState(expiring)).status).to.equal(5n);
-        await expect(registry.connect(alice).withdrawTradeRequest(expiring))
-            .to.be.revertedWithCustomError(registry, "InvalidTradeRequestStatus").withArgs(expiring, 5n);
-        await expect(registry.tradeRequestState(ZeroHash))
-            .to.be.revertedWithCustomError(registry, "UnknownTradeRequest").withArgs(ZeroHash);
+        const definition = await publish("Shared administration");
+        await clients.transferOwnership(carol.address);
+        expect(await registry.owner()).to.equal(owner.address);
+        await clients.connect(carol).acceptOwnership();
+        expect(await registry.owner()).to.equal(carol.address);
+        await expect(registry.setProductDefinitionStatus(definition, SUSPENDED))
+            .to.be.revertedWithCustomError(registry, "UnauthorizedRegistryOwner").withArgs(owner.address);
+        await registry.connect(carol).setProductDefinitionStatus(definition, SUSPENDED);
+        expect(await registry.getProductDefinitionStatus(definition)).to.equal(SUSPENDED);
     });
 
-    it("issues a real factory product, consumes matched requests and records its registration", async function () {
-        const definition = await publish("Issued demo");
-        const first = await request(alice, definition);
-        const second = await request(bob, definition);
-        expect(await registry.isRegisteredProduct(factory.target)).to.equal(false);
-        expect(await registry.isRegisteredProduct(alice.address)).to.equal(false);
-        expect(await registry.isRegisteredProduct(ZeroAddress)).to.equal(false);
-        const params = { productDefinitionId: definition, productPayload: "0x" };
-        const issued = await eventArgs(await registry.issueProductForRequests([first, second], params), "ProductIssued");
-        const product = await ethers.getContractAt("ProductXmlNoteMock", issued.product);
+    it("addresses either party directly and lets the requester withdraw and the recipient reject", async function () {
+        const definition = await publish("Bilateral requests");
+        const toBob = await request(bobDesk, alice, definition, 1n, "0x1234");
+        const forwarded = await bobDesk.sendTradeRequest(aliceDesk.target, definition, 1n, "0xab");
+        const toAlice = (await eventArgs(forwarded, aliceDesk, "TradeRequested")).tradeRequestId;
 
-        expect(await registry.productOf(first)).to.equal(product.target);
-        expect(await registry.productOf(second)).to.equal(product.target);
+        expect(await bobDesk.getActiveTradeRequests(definition)).to.deep.equal([toBob]);
+        expect(await aliceDesk.getActiveTradeRequests(definition)).to.deep.equal([toAlice]);
+        const received = await bobDesk.tradeRequestState(toBob);
+        expect(received.requester).to.equal(alice.address);
+        expect(received.productPayload).to.equal("0x1234");
+        expect(received.productDefinitionVersion).to.equal(1n);
+        expect(received.product).to.equal(ZeroAddress);
+        expect((await aliceDesk.tradeRequestState(toAlice)).requester).to.equal(bob.address);
+        await expect(aliceDesk.tradeRequestState(toBob))
+            .to.be.revertedWithCustomError(aliceDesk, "UnknownTradeRequest");
+        await expect(bobDesk.withdrawTradeRequest(toBob))
+            .to.be.revertedWithCustomError(bobDesk, "NotRequester");
+        await expect(bobDesk.connect(alice).rejectTradeRequest(toBob))
+            .to.be.revertedWithCustomError(bobDesk, "NotClient");
+
+        await bobDesk.connect(alice).withdrawTradeRequest(toBob);
+        await aliceDesk.rejectTradeRequest(toAlice);
+        expect((await bobDesk.tradeRequestState(toBob)).status).to.equal(REQUEST.withdrawn);
+        expect((await aliceDesk.tradeRequestState(toAlice)).status).to.equal(REQUEST.rejected);
+        expect(await bobDesk.getActiveTradeRequests(definition)).to.deep.equal([]);
+        expect(await aliceDesk.getActiveTradeRequests(definition)).to.deep.equal([]);
+    });
+
+    it("attributes delegated actions to the client and immediately revokes an operator's authority", async function () {
+        const definition = await publish("Application access");
+        await expect(aliceDesk.connect(carol).sendTradeRequest(bobDesk.target, definition, 1n, "0x"))
+            .to.be.revertedWithCustomError(aliceDesk, "NotClient");
+        await aliceDesk.setOperator(carol.address, true);
+        const tx = await aliceDesk.connect(carol).sendTradeRequest(bobDesk.target, definition, 1n, "0x");
+        const id = (await eventArgs(tx, bobDesk, "TradeRequested")).tradeRequestId;
+        expect((await bobDesk.tradeRequestState(id)).requester).to.equal(alice.address);
+        await expect(aliceDesk.connect(carol).setOperator(owner.address, true))
+            .to.be.revertedWithCustomError(aliceDesk, "NotClient").withArgs(carol.address);
+
+        await aliceDesk.setOperator(carol.address, false);
+        await expect(aliceDesk.connect(carol).withdrawSentTradeRequest(bobDesk.target, id))
+            .to.be.revertedWithCustomError(aliceDesk, "NotClient");
+        await aliceDesk.withdrawSentTradeRequest(bobDesk.target, id);
+        expect((await bobDesk.tradeRequestState(id)).status).to.equal(REQUEST.withdrawn);
+
+        await bobDesk.setOperator(carol.address, true);
+        const issuance = await bobDesk.connect(carol).issueProduct(definition, 1n, "0x");
+        const issued = await eventArgs(issuance, registry, "ProductIssued");
+        const product = await ethers.getContractAt("ProductXmlNoteMock", issued.product);
+        expect(await product.productProvider()).to.equal(bob.address);
+    });
+
+    it("expires requests when their definition is revised or retired and pins direct issuance to its version", async function () {
+        const definition = await publish("Changing definition");
+        const first = await request(bobDesk, alice, definition);
+        await registry.updateProductDefinition(definition, components());
+        expect((await bobDesk.tradeRequestState(first)).status).to.equal(REQUEST.expired);
+        expect(await bobDesk.getActiveTradeRequests(definition)).to.deep.equal([]);
+        await expect(bobDesk.issueProductForRequests([first], "0x"))
+            .to.be.revertedWithCustomError(bobDesk, "InvalidTradeRequestStatus").withArgs(first, REQUEST.expired);
+        await expect(bobDesk.issueProduct(definition, 1n, "0x"))
+            .to.be.revertedWithCustomError(bobDesk, "WrongDefinitionVersion").withArgs(1n, 2n);
+        await expect(bobDesk.connect(alice).createTradeRequest(definition, 1n, "0x"))
+            .to.be.revertedWithCustomError(bobDesk, "WrongDefinitionVersion").withArgs(1n, 2n);
+
+        const second = await request(bobDesk, alice, definition, 2n);
+        expect((await bobDesk.tradeRequestState(second)).productDefinitionVersion).to.equal(2n);
+        await registry.setProductDefinitionStatus(definition, RETIRED);
+        expect((await bobDesk.tradeRequestState(second)).status).to.equal(REQUEST.expired);
+        expect(await bobDesk.getActiveTradeRequests(definition)).to.deep.equal([]);
+        await expect(bobDesk.issueProductForRequests([second], "0x"))
+            .to.be.revertedWithCustomError(bobDesk, "InvalidTradeRequestStatus").withArgs(second, REQUEST.expired);
+        await expect(bobDesk.tradeRequestState(ZeroHash))
+            .to.be.revertedWithCustomError(bobDesk, "UnknownTradeRequest");
+    });
+
+    it("rechecks both clients at request and issuance time while preserving withdrawal", async function () {
+        const definition = await publish("Current eligibility");
+        const first = await request(bobDesk, alice, definition);
+        await clients.setClientStatus(alice.address, CLIENT.suspended);
+        await expect(bobDesk.connect(alice).createTradeRequest(definition, 1n, "0x"))
+            .to.be.revertedWithCustomError(bobDesk, "ClientNotEligible").withArgs(alice.address, definition);
+        await expect(bobDesk.issueProductForRequests([first], "0x"))
+            .to.be.revertedWithCustomError(bobDesk, "ClientNotEligible").withArgs(alice.address, definition);
+        expect((await bobDesk.tradeRequestState(first)).status).to.equal(REQUEST.active);
+        await bobDesk.connect(alice).withdrawTradeRequest(first);
+        await clients.setClientStatus(alice.address, CLIENT.active);
+
+        const second = await request(bobDesk, alice, definition);
+        await clients.setClientStatus(bob.address, CLIENT.revoked);
+        await expect(bobDesk.connect(alice).createTradeRequest(definition, 1n, "0x"))
+            .to.be.revertedWithCustomError(bobDesk, "ClientNotEligible").withArgs(bob.address, definition);
+        await expect(bobDesk.issueProductForRequests([second], "0x"))
+            .to.be.revertedWithCustomError(registry, "ClientNotEligible").withArgs(bob.address, definition);
+        await expect(bobDesk.issueProduct(definition, 1n, "0x"))
+            .to.be.revertedWithCustomError(registry, "ClientNotEligible").withArgs(bob.address, definition);
+        expect((await bobDesk.tradeRequestState(second)).product).to.equal(ZeroAddress);
+    });
+
+    it("keeps outstanding requests fulfillable during definition suspension and rejects new business", async function () {
+        const definition = await publish("Suspended offering");
+        const first = await request(bobDesk, alice, definition);
+        await registry.setProductDefinitionStatus(definition, SUSPENDED);
+        await expect(bobDesk.connect(alice).createTradeRequest(definition, 1n, "0x"))
+            .to.be.revertedWithCustomError(registry, "ProductDefinitionNotActive").withArgs(definition, SUSPENDED);
+        await expect(bobDesk.issueProduct(definition, 1n, "0x"))
+            .to.be.revertedWithCustomError(registry, "ProductDefinitionNotActive").withArgs(definition, SUSPENDED);
+        await bobDesk.issueProductForRequests([first], "0x");
+        expect((await bobDesk.tradeRequestState(first)).status).to.equal(REQUEST.fulfilled);
+    });
+
+    it("issues through the anchored factory for the responding party and consumes each request once", async function () {
+        const definition = await publish("Issued offering");
+        await onboard(carol);
+        const first = await request(bobDesk, alice, definition, 1n, "0x1234");
+        const second = await request(bobDesk, carol, definition, 1n, "0xab");
+        expect(await registry.isRegisteredProduct(factory.target)).to.equal(false);
+        await expect(registry.issueProduct(definition, 1n, "0x"))
+            .to.be.revertedWithCustomError(registry, "UnrecognizedTradingContract").withArgs(owner.address);
+        await expect(registry.connect(bob).issueProduct(definition, 1n, "0x"))
+            .to.be.revertedWithCustomError(registry, "UnrecognizedTradingContract").withArgs(bob.address);
+        await expect(bobDesk.connect(alice).issueProductForRequests([first], "0x"))
+            .to.be.revertedWithCustomError(bobDesk, "NotClient").withArgs(alice.address);
+        await expect(bobDesk.issueProductForRequests([first, first], "0x"))
+            .to.be.revertedWithCustomError(bobDesk, "InvalidTradeRequestStatus").withArgs(first, REQUEST.fulfilled);
+        const otherDefinition = await publish("Independent offering");
+        const otherRequest = await request(bobDesk, alice, otherDefinition);
+        await expect(bobDesk.issueProductForRequests([first, otherRequest], "0x"))
+            .to.be.revertedWithCustomError(bobDesk, "MismatchedRequest").withArgs(otherRequest);
+        expect((await bobDesk.tradeRequestState(first)).status).to.equal(REQUEST.active);
+        expect((await bobDesk.tradeRequestState(otherRequest)).status).to.equal(REQUEST.active);
+
+        const issuance = await bobDesk.issueProductForRequests([first, second], "0x5678");
+        const issued = await eventArgs(issuance, registry, "ProductIssued");
+        const product = await ethers.getContractAt("ProductXmlNoteMock", issued.product);
         expect(await registry.isRegisteredProduct(product.target)).to.equal(true);
         expect(await factory.isFactoryDeployedProduct(product.target)).to.equal(true);
         expect(await product.productRegistry()).to.equal(registry.target);
         expect(await product.productFactory()).to.equal(factory.target);
-        expect(await product.productProvider()).to.equal(owner.address);
+        expect(await product.productProvider()).to.equal(bob.address);
         expect(await product.productDefinitionId()).to.equal(definition);
+        expect(await product.productDefinitionVersion()).to.equal(1n);
         expect(await product.productTermsTemplate()).to.equal(terms.target);
-        expect(await product.stateXmlTemplate()).to.contain(await terms.web3Url());
-        expect(await activeRequestIds(definition)).to.deep.equal([]);
-        expect((await registry.tradeRequestState(first)).status).to.equal(2n);
-        expect((await registry.tradeRequestState(second)).status).to.equal(2n);
-        await expect(registry.issueProductForRequests([first], params))
-            .to.be.revertedWithCustomError(registry, "InvalidTradeRequestStatus").withArgs(first, 2n);
-
-        const directIssue = await eventArgs(await registry.issueProductWithoutRequests(params), "ProductIssued");
-        expect(directIssue.product).not.to.equal(product.target);
-        expect(await registry.isRegisteredProduct(directIssue.product)).to.equal(true);
-        expect(await registry.isRegisteredProduct(product.target)).to.equal(true);
-        expect(await registry.productOf(first)).to.equal(product.target);
+        const issuedXml = await product.stateXmlTemplate();
+        expect(issuedXml).to.contain(await terms.web3Url());
+        expect(issuedXml).not.to.contain("<LegalDocumentation");
+        expect(await bobDesk.getActiveTradeRequests(definition)).to.deep.equal([]);
+        for (const id of [first, second]) {
+            const record = await bobDesk.tradeRequestState(id);
+            expect(record.status).to.equal(REQUEST.fulfilled);
+            expect(record.product).to.equal(product.target);
+        }
+        await expect(bobDesk.issueProductForRequests([first], "0x"))
+            .to.be.revertedWithCustomError(bobDesk, "InvalidTradeRequestStatus").withArgs(first, REQUEST.fulfilled);
+        const direct = await eventArgs(await aliceDesk.issueProduct(definition, 1n, "0x"), registry, "ProductIssued");
+        expect(direct.product).not.to.equal(product.target);
+        expect(await registry.isRegisteredProduct(direct.product)).to.equal(true);
+        const directProduct = await ethers.getContractAt("ProductXmlNoteMock", direct.product);
+        expect(await directProduct.productProvider()).to.equal(alice.address);
+        expect(await directProduct.productDefinitionVersion()).to.equal(1n);
+        expect((await registry.productDefinitionState(definition)).version).to.equal(1n);
     });
 
     it("caps definition discovery without truncating the final page", async function () {

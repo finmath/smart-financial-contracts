@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns:spf="urn:smart-product-framework:financial-product:2.0"
+           targetNamespace="urn:smart-product-framework:financial-product:2.0"
+           elementFormDefault="qualified" version="2.0.0">
+    <xs:element name="SmartFinancialProduct">
+        <xs:complexType>
+            <xs:sequence>
+                <xs:element name="DeploymentState">
+                    <xs:complexType>
+                        <xs:sequence>
+                            <xs:any namespace="##targetNamespace" processContents="lax" maxOccurs="unbounded"/>
+                        </xs:sequence>
+                    </xs:complexType>
+                </xs:element>
+                <xs:element name="ProductResources">
+                    <xs:complexType>
+                        <xs:sequence>
+                            <xs:element name="ProductTermsTemplate">
+                                <xs:complexType>
+                                    <xs:sequence>
+                                        <!-- The XInclude in the template or the resolved terms document. -->
+                                        <xs:any processContents="lax"/>
+                                    </xs:sequence>
+                                    <xs:attribute name="type" type="xs:string" use="required"/>
+                                    <xs:attribute name="version" type="xs:string" use="required"/>
+                                    <xs:attribute name="namespace" type="xs:anyURI" use="required"/>
+                                    <xs:attribute name="mediaType" type="xs:string" use="required"/>
+                                </xs:complexType>
+                            </xs:element>
+                            <!-- The first successful offer fixes the product's legal documentation. -->
+                            <xs:element name="LegalDocumentation" minOccurs="0" maxOccurs="1">
+                                <xs:complexType>
+                                    <xs:attribute name="href" type="xs:anyURI" use="required"/>
+                                    <xs:attribute name="integrity" type="spf:ContentIntegrity" use="required"/>
+                                </xs:complexType>
+                            </xs:element>
+                        </xs:sequence>
+                    </xs:complexType>
+                </xs:element>
+            </xs:sequence>
+            <xs:attribute name="schemaVersion" type="xs:string" fixed="2.0.0" use="required"/>
+            <xs:attribute name="type" type="xs:string" use="required"/>
+            <xs:attribute name="typeVersion" type="xs:string" use="required"/>
+            <xs:anyAttribute namespace="urn:evm:state:1.0" processContents="lax"/>
+        </xs:complexType>
+    </xs:element>
+    <xs:simpleType name="ContentIntegrity">
+        <xs:restriction base="xs:string">
+            <xs:length value="76"/>
+            <xs:pattern value="keccak256-0x[0-9a-fA-F]{64}"/>
+        </xs:restriction>
+    </xs:simpleType>
+</xs:schema>

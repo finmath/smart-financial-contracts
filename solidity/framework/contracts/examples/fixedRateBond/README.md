@@ -23,16 +23,21 @@ contract-size limits remain enabled, including for factory deployment.
 ## Lifecycle
 
 1. Deploy the existing asset, cash token, client and product registries, resources,
-   indications, payment adapter and linked libraries. Publish a definition whose
-   factory fixes the asset and payment addresses. Request the trade and issue the
-   bond through the registry. Authorize the bond in the payment adapter.
-2. The issuer incepts the trade with the issuer, buyer, terms hash, negative aggregate
-   nominal position, positive issue-price payment, and initial settlement data. The
-   bond returns and emits its contract-generated trade identifier. The buyer confirms
-   that identifier and the identical inception terms. The terms hash binds the
-   economics, finalized resource hashes, asset and payment contracts. Both calls
-   use the issuer's perspective; confirmation does not reverse the signs.
-   Confirmation enables delivery of the already-existing asset.
+   indications, payment adapter and linked libraries. The registry administrator
+   publishes a definition whose factory fixes the asset and payment addresses.
+   The buyer and issuer each open a trading contract. The buyer sends a
+   nonbinding request to the issuer's trading address. The issuer uses that
+   contract to create the bond through the product registry at the requested
+   definition revision. The payment operator authorizes the bond in the adapter.
+2. The issuer calls ERC-6123 `inceptTrade(issuer, buyer, tradeData, position, paymentAmount, initialSettlementData)`.
+   Its application prepares `tradeData` as a lowercase hex string encoding
+   `abi.encode(legalDocumentationAddress, agreementHash)`. The address selects
+   a finalized `TextResource` containing the text of the issuance conditions. The issuer
+   offers the negative aggregate nominal position and positive issue-price payment.
+   The buyer reads the legal documentation and verifies the agreement hash against
+   the bond economics, documentation content hash, asset token and payment contract. To accept,
+   the buyer calls `confirmTrade` with the generated trade ID and all six original
+   fields from `TradeIncepted`. Confirmation enables delivery of the existing asset.
 3. The issuer approves the asset escrow. The buyer incepts delivery and a matching
    payment. The operator commits two outcome hashes; the bond checks the payment
    context and locks the asset. Success moves cash and asset units atomically.
@@ -50,18 +55,21 @@ contract-size limits remain enabled, including for factory deployment.
 
 The four agreement states remain separate from `positionState`, which tracks
 delivery, the redemption proposal, authorization to return the units, and repayment.
-`inceptTrade` generates the trade identifier from the bond's own address;
-`confirmTrade` and `cancelTrade` take it as their first argument, followed by every
-inception field. `tradeId()` exposes this deterministic identifier even before
-inception. This bond remains single-use: confirmation or cancellation prevents
-another inception. Maturity repayment uses the same identifier in the termination methods.
+`tradeId()` exposes the first trade ID, derived from the bond address, even
+before inception. To revise an offer, the issuer calls `cancelTrade` with the
+pending trade ID and all six inception fields. After `TradeCanceled`, the issuer
+can submit another `inceptTrade` on the same bond with the documentation address
+fixed by its first successful offer. Using a different resource requires a new
+bond. Each new `TradeIncepted` event supplies a fresh ID even when all offer
+fields are identical. The buyer confirms the pending offer, and maturity
+repayment uses the confirmed trade ID.
 The requesting issuer can cancel an unmatched redemption proposal or an accepted
 proposal before an asset attempt is active; a later request starts a new proposal.
 
 All six ERC-6123 trade methods allow a participant's authorized operator to submit
 the action. A participant calls `setTradeOperator(operator, true)` on this bond to
 grant that authority and uses `false` to revoke it. Inception and cancellation
-require issuer authority; confirmation requires buyer authority. Termination
+require issuer authority. Confirmation requires buyer authority. Termination
 requests and cancellations require the requesting issuer's authority, while
 termination confirmation requires buyer authority. Events identify those economic
 participants, and all transfers continue between their stored wallets. Token

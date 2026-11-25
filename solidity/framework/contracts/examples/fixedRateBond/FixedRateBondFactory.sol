@@ -15,7 +15,7 @@ import {ERC165Checker} from "@openzeppelin/contracts/utils/introspection/ERC165C
  * @title FixedRateBondFactory
  * @notice Factory defining and deploying the FixedRateBond product specification.
  *
- * @dev Defines the product payload schema, required resource types, and
+ * @dev Defines the product payload schema, required terms-template type, and
  *      accepted indication category. Product deployment is restricted by
  *      AbstractProductFactory.
  *
@@ -28,9 +28,6 @@ contract FixedRateBondFactory is FixedRateBondConventions, AbstractProductFactor
 
     /// @notice Required resource type of the product terms template.
     bytes32 internal constant PRODUCT_TERMS_TEMPLATE_RESOURCE_TYPE = keccak256("SPF:FIXED_RATE_BOND:PRODUCT_TERMS_TEMPLATE:V1");
-
-    /// @notice Required resource type of the product documentation template.
-    bytes32 internal constant PRODUCT_DOCUMENTATION_TEMPLATE_RESOURCE_TYPE = keccak256("SPF:FIXED_RATE_BOND:PRODUCT_DOCUMENTATION_TEMPLATE:V1");
 
     // ------------------------------ Immutable State ------------------------------ */
 
@@ -98,11 +95,6 @@ contract FixedRateBondFactory is FixedRateBondConventions, AbstractProductFactor
     /// @inheritdoc AbstractProductFactory
     function productTermsTemplateResourceType() external pure override returns (bytes32) {
         return PRODUCT_TERMS_TEMPLATE_RESOURCE_TYPE;
-    }
-
-    /// @inheritdoc AbstractProductFactory
-    function productDocumentationTemplateResourceType() external pure override returns (bytes32) {
-        return PRODUCT_DOCUMENTATION_TEMPLATE_RESOURCE_TYPE;
     }
 
     // ------------------------------ Product Indication ------------------------------ */

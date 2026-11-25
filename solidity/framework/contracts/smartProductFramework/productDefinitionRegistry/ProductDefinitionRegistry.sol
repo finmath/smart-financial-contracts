@@ -4,7 +4,7 @@ pragma solidity ^0.8.24;
 import {ITextResource} from "../../erc8100/ITextResource.sol";
 import {IXMLRepresentableStatePart, IRepresentableStateVersioned} from "../../erc8100/IRepresentableState.sol";
 
-import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
 import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 import {ERC165Checker} from "@openzeppelin/contracts/utils/introspection/ERC165Checker.sol";
@@ -14,16 +14,16 @@ import {LibString} from "solady/src/utils/LibString.sol";
 import {IProductDefinitionRegistry} from "./IProductDefinitionRegistry.sol";
 import {IProductIndication} from "../productIndications/IProductIndication.sol";
 import {IProductFactory} from "../productFactories/IProductFactory.sol";
+import {TradingContractFactory} from "../trading/TradingContractFactory.sol";
 import {IClientRegistry} from "../clientRegistry/IClientRegistry.sol";
 import {CommonDeploymentParams, ProductDeploymentParams} from "../productFactories/ProductDeploymentTypes.sol";
 
 /**
  * @title ProductDefinitionRegistry
- * @notice Registry for product definitions, indication assignments, eligible
- *         trade requests, and product deployment.
+ * @notice Registry for versioned product definitions, indication assignments and product issuance.
  *
- * @dev Each product definition anchors the exact factory and finalized text
- *      resources used for deployment. The registry validates the anchored
+ * @dev Each product definition anchors the exact factory and finalized product
+ *      terms template used for deployment. The registry validates the anchored
  *      components, manages lifecycle state, and deploys products directly
  *      through the selected factory.
  *
@@ -35,29 +35,13 @@ import {CommonDeploymentParams, ProductDeploymentParams} from "../productFactori
  *
  * @author Raphael Prandtl
  */
-contract ProductDefinitionRegistry is IProductDefinitionRegistry, IXMLRepresentableStatePart, IRepresentableStateVersioned, Ownable2Step, ReentrancyGuard {
+contract ProductDefinitionRegistry is IProductDefinitionRegistry, IXMLRepresentableStatePart, IRepresentableStateVersioned, ReentrancyGuard {
     using Strings for uint256;
     using ERC165Checker for address;
     using EnumerableSet for EnumerableSet.Bytes32Set;
 
     /// @notice Maximum number of entries returned by definition discovery pages.
     uint256 public constant MAX_DISCOVERY_PAGE_SIZE = 100;
-
-    // ------------------------------ Enums -------------------------------------- */
-
-    /**
-     * @notice Lifecycle status of a trade request.
-     * @dev Fulfilled means a product was issued for this request.
-     *      It does NOT imply the client confirmed the trade on the product.
-     */
-    enum TradeRequestStatus {
-        Unknown,
-        Active,
-        Fulfilled,
-        Withdrawn,
-        Rejected,
-        Expired
-    }
 
     // ------------------------------ Custom Errors ------------------------------ */
 
@@ -100,23 +84,14 @@ contract ProductDefinitionRegistry is IProductDefinitionRegistry, IXMLRepresenta
     /// @notice Thrown when the caller is not eligible for the product definition.
     error ClientNotEligible(address client, bytes32 productDefinitionId);
 
-    /// @notice Thrown when the caller tries to modify the status of an inactive trade request.
-    error InvalidTradeRequestStatus(bytes32 tradeRequestId, TradeRequestStatus status);
+    /// @notice The caller must be the current owner of the client registry.
+    error UnauthorizedRegistryOwner(address caller);
 
-    /// @notice Thrown when a client tries to modify a trade request not created by himself.
-    error InvalidTradeRequestOwner(address client);
+    /// @notice Issuance is restricted to trading contracts created for this registry.
+    error UnrecognizedTradingContract(address caller);
 
-    /// @notice Thrown when an empty array of trade request ids is provided.
-    error EmptyTradeRequestIds();
-
-    /// @notice Thrown when an unknown trade request id is provided.
-    error UnknownTradeRequest(bytes32 tradeRequestId);
-
-    /// @notice Thrown when the product definition of a trade request does not match the definition of the issuing product.
-    error ProductDefinitionMismatch(bytes32 expected, bytes32 actual);
-
-    /// @notice Thrown when the version of the currently active product definition deviates from the version in the trade request.
-    error ProductDefinitionVersionMismatch(bytes32 tradeRequestId, uint256 requestedVersion, uint256 currentVersion);
+    /// @notice The caller selected a different revision of the definition.
+    error ProductDefinitionVersionMismatch(bytes32 productDefinitionId, uint256 expectedVersion, uint256 currentVersion);
 
     /// @notice Thrown when an operation requires an active or suspended product definition.
     error ProductDefinitionNotFulfillable(bytes32 productDefinitionId, ProductDefinitionStatus status);
@@ -138,21 +113,6 @@ contract ProductDefinitionRegistry is IProductDefinitionRegistry, IXMLRepresenta
     /// @notice Emitted when a product definition's indication is cleared.
     event ProductIndicationCleared(bytes32 indexed productDefinitionId);
 
-    /// @notice Emitted when a trade is requested.
-    event TradeRequested(bytes32 indexed productDefinitionId, address indexed client, bytes32 indexed tradeRequestId);
-
-    /// @notice Emitted when a trade request is withdrawn.
-    event TradeRequestWithdrawn(bytes32 indexed productDefinitionId, address indexed client, bytes32 indexed tradeRequestId);
-
-    /// @notice Emitted when a trade request is rejected.
-    event TradeRequestRejected(bytes32 indexed productDefinitionId, address indexed client, bytes32 indexed tradeRequestId);
-
-    /// @notice Emitted when a trade request is expired.
-    event TradeRequestExpired(bytes32 indexed productDefinitionId, address indexed client, bytes32 indexed tradeRequestId);
-
-    /// @notice Emitted when a trade request is fulfilled.
-    event TradeRequestFulfilled(bytes32 indexed productDefinitionId, address indexed client, bytes32 indexed tradeRequestId);
-
     /// @notice Emitted when a product is issued.
     event ProductIssued(bytes32 indexed productDefinitionId, uint256 productDefinitionVersion, address indexed product);
 
@@ -162,7 +122,7 @@ contract ProductDefinitionRegistry is IProductDefinitionRegistry, IXMLRepresenta
     /// @dev Separate from the component version used to bind trade requests. Lifecycle and
     ///      indication-assignment changes also advance this checked counter. XML embeds only
     ///      stored definition data and references to finalized, immutable ITextResource content;
-    ///      indication payloads and trade requests are not part of this representation.
+    ///      indication payloads are rendered by the indication contract.
     uint256 public override stateVersion;
 
     /// @dev partId is not stored because it is derivable from the key.
@@ -175,15 +135,6 @@ contract ProductDefinitionRegistry is IProductDefinitionRegistry, IXMLRepresenta
         ProductDefinition productDefinition;
     }
 
-    /// @notice Fixed-size discovery record; use getProductDefinition for names and resources.
-    struct ProductDefinitionState {
-        bytes32 productDefinitionId;
-        ProductDefinitionStatus status;
-        uint64 publishedAt;
-        uint64 updatedAt;
-        uint256 version;
-    }
-
     /// @notice Indication assigned to a product definition.
     struct ProductIndicationAssignment {
         address productIndication;
@@ -191,52 +142,11 @@ contract ProductDefinitionRegistry is IProductDefinitionRegistry, IXMLRepresenta
         uint256 partId;
     }
 
-    /**
-     * @notice Parameters for a trade request and fulfillment.
-     * @param productDefinitionId Product definition to trade against.
-     * @param productPayload ABI-encoded product payload.
-     */
-    struct TradeParams {
-        bytes32 productDefinitionId;
-        bytes productPayload;
-    }
-
-    /**
-     * @notice Parameters of a stored trade request.
-     * @param status Current lifecycle status.
-     * @param createdAt Timestamp of initial request.
-     * @param client Requester of the trade.
-     * @param productDefinitionId Product definition to trade against.
-     * @param productDefinitionVersion Product definition version.
-     * @param productPayload ABI-encoded product payload.
-     */
-    struct TradeRequest {
-        TradeRequestStatus status;
-        uint64 createdAt;
-        address client;
-        bytes32 productDefinitionId;
-        uint256 productDefinitionVersion;
-        bytes productPayload;
-    }
-
-    /// @notice View of a stored trade request.
-    struct TradeRequestView {
-        bytes32 tradeRequestId;
-        TradeRequest request;
-    }
-
-    /// @notice Fixed-size state of a known request, including requests that are no longer active.
-    struct TradeRequestState {
-        bytes32 tradeRequestId;
-        TradeRequestStatus status;
-        uint64 createdAt;
-        address client;
-        bytes32 productDefinitionId;
-        uint256 productDefinitionVersion;
-    }
-
     /// @notice Client registry used for eligibility checks.
     address public immutable override clientRegistryAddress;
+
+    /// @inheritdoc IProductDefinitionRegistry
+    address public immutable override tradingContractFactory;
 
     /// @notice Maps a product definition id to its storage.
     mapping(bytes32 => ProductDefinitionStorage) internal _productDefinitionsById;
@@ -247,31 +157,26 @@ contract ProductDefinitionRegistry is IProductDefinitionRegistry, IXMLRepresenta
     /// @dev Keyed by the same productDefinitionId as _productDefinitionsById.
     mapping(bytes32 => ProductIndicationAssignment) internal _indicationsByDefinitionId;
 
-    /// @notice Maps a tradeRequestId to the request data
-    mapping(bytes32 => TradeRequest) private _tradeRequestsById;
-
-    /// @notice Set of all active tradeRequestIds by productDefinitionId
-    mapping(bytes32 => EnumerableSet.Bytes32Set) private _activeRequestIdsByProduct;
-
-    /// @notice Maps a trade request to to an issued product.
-    mapping(bytes32 => address) private _productByTradeRequestId;
-
     /// @notice Verifies a product is issued by this registry.
     mapping(address => bool) private _isRegisteredProduct;
 
-    /// @dev per-client nonce for unique tradeId generation
-    mapping(address => uint256) private _tradeNonce;
+    // ------------------------------ Administration ------------------------------ */
 
-    // ------------------------------ Constructor ------------------------------ */
-
-    /**
-     * @param owner_                 Initial owner / product provider.
-     * @param clientRegistryAddress_ Client registry for eligibility checks.
-     */
-    constructor(address owner_, address clientRegistryAddress_) {
+    constructor(address clientRegistryAddress_) {
         _validateContractAddress(clientRegistryAddress_, "clientRegistry");
+        if (Ownable(clientRegistryAddress_).owner() == address(0)) revert ZeroAddress("clientRegistry.owner");
         clientRegistryAddress = clientRegistryAddress_;
-        _transferOwnership(owner_);
+        tradingContractFactory = address(new TradingContractFactory(address(this), clientRegistryAddress_));
+    }
+
+    /// @inheritdoc IProductDefinitionRegistry
+    function owner() public view override returns (address) {
+        return Ownable(clientRegistryAddress).owner();
+    }
+
+    modifier onlyOwner() {
+        if (msg.sender != owner()) revert UnauthorizedRegistryOwner(msg.sender);
+        _;
     }
 
     // ------------------------------ Product Definition Publication and Lifecycle Management ------------------------------ */
@@ -293,7 +198,7 @@ contract ProductDefinitionRegistry is IProductDefinitionRegistry, IXMLRepresenta
         _productDefinitionIds.add(productDefinitionId);
         _touchProductDefinition(definitionStorage);
 
-        emit ProductDefinitionPublished(productDefinitionId, params.productDefinition.productFactory, params.productDefinition.productTermsTemplate, params.productDefinition.productDocumentationTemplate);
+        emit ProductDefinitionPublished(productDefinitionId, params.productDefinition.productFactory, params.productDefinition.productTermsTemplate);
         emit ProductDefinitionStatusChanged(productDefinitionId, ProductDefinitionStatus.Unknown, ProductDefinitionStatus.Active);
         emit StatePartUpdated(msg.sender, address(this), _partIdFromProductDefinitionId(productDefinitionId), definitionStorage.version);
     }
@@ -308,13 +213,11 @@ contract ProductDefinitionRegistry is IProductDefinitionRegistry, IXMLRepresenta
         if (assignment.productIndication != address(0) && definitionStorage.productDefinition.productFactory != productDefinition.productFactory) {
             _validateProductIndication(productDefinition.productFactory, assignment.productIndication, assignment.indicationId);
         }
-        // Expire open trade requests against old product definition version
-        _expireOpenTradeRequests(productDefinitionId);
 
         definitionStorage.productDefinition = productDefinition;
         _touchProductDefinition(definitionStorage);
 
-        emit ProductDefinitionUpdated(productDefinitionId, productDefinition.productFactory, productDefinition.productTermsTemplate, productDefinition.productDocumentationTemplate, definitionStorage.version);
+        emit ProductDefinitionUpdated(productDefinitionId, productDefinition.productFactory, productDefinition.productTermsTemplate, definitionStorage.version);
         emit StatePartUpdated(msg.sender, address(this), _partIdFromProductDefinitionId(productDefinitionId), definitionStorage.version);
     }
 
@@ -330,10 +233,6 @@ contract ProductDefinitionRegistry is IProductDefinitionRegistry, IXMLRepresenta
         definitionStorage.status = newStatus;
         definitionStorage.updatedAt = uint64(block.timestamp);
         ++stateVersion;
-        // Expire open trade requests when product definition is retired
-        if (newStatus == ProductDefinitionStatus.Retired) {
-            _expireOpenTradeRequests(productDefinitionId);
-        }
 
         emit ProductDefinitionStatusChanged(productDefinitionId, oldStatus, newStatus);
         emit StatePartUpdated(msg.sender, address(this), _partIdFromProductDefinitionId(productDefinitionId), definitionStorage.version);
@@ -346,8 +245,8 @@ contract ProductDefinitionRegistry is IProductDefinitionRegistry, IXMLRepresenta
         return _productDefinitionIds.length();
     }
 
-    /// @notice Returns compact state for a known definition, regardless of status.
-    function productDefinitionState(bytes32 productDefinitionId) external view returns (ProductDefinitionState memory) {
+    /// @inheritdoc IProductDefinitionRegistry
+    function productDefinitionState(bytes32 productDefinitionId) external view override returns (ProductDefinitionState memory) {
         return _productDefinitionState(productDefinitionId);
     }
 
@@ -431,89 +330,42 @@ contract ProductDefinitionRegistry is IProductDefinitionRegistry, IXMLRepresenta
         return (assignment.productIndication, assignment.indicationId, assignment.partId);
     }
 
-    // ------------------------------ Trade Lifecycle ------------------------------ */
+    // ------------------------------ Product Issuance ------------------------------ */
 
-    /// @notice Returns all active trade requests.
-    /// @dev Unbounded; intended for definitions with a small active request set.
-    function getActiveTradeRequests(bytes32 productDefinitionId) external view returns (TradeRequestView[] memory items) {
-        bytes32[] memory ids = _activeRequestIdsByProduct[productDefinitionId].values();
-        items = new TradeRequestView[](ids.length);
-        for (uint256 i = 0; i < ids.length; i++) {
-            items[i] = TradeRequestView({tradeRequestId: ids[i], request: _tradeRequestsById[ids[i]]});
-        }
-    }
-
-    /// @notice Returns compact state for a known trade request, regardless of status.
-    function tradeRequestState(bytes32 tradeRequestId) external view returns (TradeRequestState memory) {
-        return _tradeRequestState(tradeRequestId);
-    }
-
-    /// @notice Validates this address is the origin of a product
+    /// @inheritdoc IProductDefinitionRegistry
     function isRegisteredProduct(address product) external view override returns (bool) {
         return _isRegisteredProduct[product];
     }
 
-    /// @notice Creates a trade request against a specific product
-    /// @dev Client payload is a non-binding indication of interest
-    function createTradeRequest(TradeParams calldata params) external nonReentrant returns (bytes32 tradeRequestId) {
-        bytes32 productDefinitionId = params.productDefinitionId;
-        ProductDefinitionStorage storage definitionStorage = _activeProductDefinition(productDefinitionId);
-
-        address client = msg.sender;
-        if (!_isEligibleClient(client, productDefinitionId)) {
-            revert ClientNotEligible(client, productDefinitionId);
+    /// @inheritdoc IProductDefinitionRegistry
+    function issueProduct(
+        bytes32 productDefinitionId, uint256 expectedVersion, bytes calldata productPayload
+    ) external override nonReentrant returns (address product) {
+        address provider = TradingContractFactory(tradingContractFactory).clientOf(msg.sender);
+        if (provider == address(0)) revert UnrecognizedTradingContract(msg.sender);
+        if (!IClientRegistry(clientRegistryAddress).isEligibleClient(provider, productDefinitionId)) {
+            revert ClientNotEligible(provider, productDefinitionId);
         }
 
-        tradeRequestId = _nextTradeRequestId(client, productDefinitionId);
-        _tradeRequestsById[tradeRequestId] = TradeRequest({
-            status: TradeRequestStatus.Active,
-            createdAt: uint64(block.timestamp),
-            productDefinitionId: productDefinitionId,
-            productDefinitionVersion: definitionStorage.version,
-            client: client,
-            productPayload: params.productPayload
-        });
-
-        _activeRequestIdsByProduct[productDefinitionId].add(tradeRequestId);
-        emit TradeRequested(productDefinitionId, client, tradeRequestId);
-    }
-
-    function withdrawTradeRequest(bytes32 tradeRequestId) external {
-        TradeRequest storage request = _activeTradeRequest(tradeRequestId);
-        if (request.client != msg.sender) {
-            revert InvalidTradeRequestOwner(msg.sender);
+        ProductDefinitionStorage storage definition = _fulfillableProductDefinition(productDefinitionId);
+        if (definition.version != expectedVersion) {
+            revert ProductDefinitionVersionMismatch(productDefinitionId, expectedVersion, definition.version);
         }
-        request.status = TradeRequestStatus.Withdrawn;
-        _activeRequestIdsByProduct[request.productDefinitionId].remove(tradeRequestId);
-        emit TradeRequestWithdrawn(request.productDefinitionId, request.client, tradeRequestId);
-    }
-
-    function rejectTradeRequest(bytes32 tradeRequestId) external onlyOwner {
-        TradeRequest storage request = _activeTradeRequest(tradeRequestId);
-        request.status = TradeRequestStatus.Rejected;
-        _activeRequestIdsByProduct[request.productDefinitionId].remove(tradeRequestId);
-        emit TradeRequestRejected(request.productDefinitionId, request.client, tradeRequestId);
-    }
-
-    /// @notice Fulfills 1-N trade requests and deploys the corresponding product.
-    function issueProductForRequests(bytes32[] calldata tradeRequestIds, TradeParams calldata params) external onlyOwner nonReentrant returns (address product) {
-        if (tradeRequestIds.length == 0) revert EmptyTradeRequestIds();
-        product = _issueProduct(tradeRequestIds, params);
-    }
-
-    /// @notice Deploys product without any request.
-    function issueProductWithoutRequests(TradeParams calldata params) external onlyOwner nonReentrant returns (address product) {
-        product = _issueProduct(new bytes32[](0), params);
-    }
-
-    /// @notice Returns the product instance deployed for a trade request.
-    /// @dev If the trade request is known but not fulfilled, this will return address(0)
-    function productOf(bytes32 tradeRequestId) external view returns (address product) {
-        TradeRequest storage request = _tradeRequestsById[tradeRequestId];
-        if (request.status == TradeRequestStatus.Unknown) {
-            revert UnknownTradeRequest(tradeRequestId);
-        }
-        product = _productByTradeRequestId[tradeRequestId];
+        ProductDefinition storage components = definition.productDefinition;
+        IProductFactory factory = IProductFactory(components.productFactory);
+        product = factory.deployProduct(ProductDeploymentParams({
+            common: CommonDeploymentParams({
+                productRegistry: address(this),
+                productProvider: provider,
+                productDefinitionId: productDefinitionId,
+                productDefinitionVersion: expectedVersion,
+                productTermsTemplate: components.productTermsTemplate
+            }),
+            productPayload: productPayload
+        }));
+        _validateProductDeployment(product, factory);
+        _isRegisteredProduct[product] = true;
+        emit ProductIssued(productDefinitionId, expectedVersion, product);
     }
 
     // ------------------------------ XML View ------------------------------ */
@@ -546,10 +398,6 @@ contract ProductDefinitionRegistry is IProductDefinitionRegistry, IXMLRepresenta
             "<ProductTermsTemplate>",
             _include(definitionStorage.productDefinition.productTermsTemplate),
             "</ProductTermsTemplate>",
-            _resourceReference(
-                "ProductDocumentationTemplate",
-                definitionStorage.productDefinition.productDocumentationTemplate
-            ),
             "</ProductResources>",
             _productIndicationAssignmentXml(productDefinitionId),
             "</ProductDefinition>"
@@ -577,20 +425,6 @@ contract ProductDefinitionRegistry is IProductDefinitionRegistry, IXMLRepresenta
             " indicationId=\"", _bytes32ToHexString(assignment.indicationId), "\"",
             " partId=\"", assignment.partId.toString(), "\"",
             "/>"
-        );
-    }
-
-    /// @notice Returns an XML reference to a finalized text resource.
-    function _resourceReference(string memory elementName, address resource) internal view returns (string memory) {
-        ITextResource textResource = ITextResource(resource);
-        return string.concat(
-            "<",
-            elementName,
-            " href=\"",
-            LibString.escapeHTML(textResource.web3Url()),
-            "\" integrity=\"",
-            _integrity(textResource.contentHash()),
-            "\"/>"
         );
     }
 
@@ -623,79 +457,6 @@ contract ProductDefinitionRegistry is IProductDefinitionRegistry, IXMLRepresenta
         ++stateVersion;
     }
 
-    // ------------------------------ Client Validation ------------------------------ */
-
-    function _isEligibleClient(address client, bytes32 productDefinitionId) internal view returns (bool) {
-        return IClientRegistry(clientRegistryAddress).isEligibleClient(client, productDefinitionId);
-    }
-
-    // ------------------------------ Internal Trade Helpers ------------------------------ */
-
-    /// @dev tradeRequestIds.length == 0 is valid: product issued without any request
-    function _issueProduct(bytes32[] memory tradeRequestIds, TradeParams calldata params) internal returns (address product) {
-        bytes32 productDefinitionId = params.productDefinitionId;
-        ProductDefinitionStorage storage definitionStorage = _fulfillableProductDefinition(productDefinitionId);
-
-        uint256 len = tradeRequestIds.length;
-        EnumerableSet.Bytes32Set storage activeSet = _activeRequestIdsByProduct[productDefinitionId];
-        uint256 currentVersion = definitionStorage.version;
-        for (uint256 i = 0; i < len; ) {
-            bytes32 id = tradeRequestIds[i];
-            // check trade request existence and active
-            TradeRequest storage request = _activeTradeRequest(id);
-            // check product definition mismatch
-            if (request.productDefinitionId != productDefinitionId) {
-                revert ProductDefinitionMismatch(productDefinitionId, request.productDefinitionId);
-            }
-            // check version mismatch
-            if (request.productDefinitionVersion != currentVersion) {
-                revert ProductDefinitionVersionMismatch(id, request.productDefinitionVersion, currentVersion);
-            }
-            // re-check client eligibility at fulfillment time
-            if (!_isEligibleClient(request.client, productDefinitionId)) {
-                revert ClientNotEligible(request.client, productDefinitionId);
-            }
-            // implicit duplicate check via _activeTradeRequest
-            request.status = TradeRequestStatus.Fulfilled;
-            activeSet.remove(id);
-            emit TradeRequestFulfilled(productDefinitionId, request.client, tradeRequestIds[i]);
-            unchecked { ++i; }
-        }
-
-        ProductDefinition memory productDefinition = definitionStorage.productDefinition;
-        IProductFactory factory = IProductFactory(productDefinition.productFactory);
-        address productProvider = owner();
-
-        // deploy product
-        product = factory.deployProduct(
-            ProductDeploymentParams({
-                common: CommonDeploymentParams({
-                productRegistry: address(this),
-                productProvider: productProvider,
-                productDefinitionId: productDefinitionId,
-                productDefinitionVersion: currentVersion,
-                productTermsTemplate: productDefinition.productTermsTemplate,
-                productDocumentationTemplate: productDefinition.productDocumentationTemplate
-            }),
-                productPayload: params.productPayload
-            })
-        );
-        // Verify external factory result
-        _validateProductDeployment(product, factory);
-
-        for (uint256 i = 0; i < len; ) {
-            _productByTradeRequestId[tradeRequestIds[i]] = product;
-            unchecked { ++i; }
-        }
-        _isRegisteredProduct[product] = true;
-        emit ProductIssued(productDefinitionId, definitionStorage.version, product);
-    }
-
-    function _nextTradeRequestId(address client, bytes32 productDefinitionId) internal returns (bytes32) {
-        uint256 nonce = _tradeNonce[client]++;
-        return keccak256(abi.encode(address(this), block.chainid, client, nonce, productDefinitionId));
-    }
-
     function _productDefinitionState(bytes32 productDefinitionId) internal view returns (ProductDefinitionState memory) {
         ProductDefinitionStorage storage definition = _existingProductDefinition(productDefinitionId);
         return ProductDefinitionState({
@@ -707,20 +468,6 @@ contract ProductDefinitionRegistry is IProductDefinitionRegistry, IXMLRepresenta
         });
     }
 
-    function _tradeRequestState(bytes32 tradeRequestId) internal view returns (TradeRequestState memory) {
-        TradeRequest storage request = _tradeRequestsById[tradeRequestId];
-        if (request.status == TradeRequestStatus.Unknown) revert UnknownTradeRequest(tradeRequestId);
-        return TradeRequestState({
-            tradeRequestId: tradeRequestId,
-            status: request.status,
-            createdAt: request.createdAt,
-            client: request.client,
-            productDefinitionId: request.productDefinitionId,
-            productDefinitionVersion: request.productDefinitionVersion
-        });
-    }
-
-    /// @dev Bound work before allocating memory; subtract first to avoid offset + limit overflow.
     function _discoveryPageLength(uint256 length, uint256 offset, uint256 limit) internal pure returns (uint256) {
         if (offset >= length) {
             return 0;
@@ -729,19 +476,6 @@ contract ProductDefinitionRegistry is IProductDefinitionRegistry, IXMLRepresenta
         if (count > limit) count = limit;
         if (count > MAX_DISCOVERY_PAGE_SIZE) count = MAX_DISCOVERY_PAGE_SIZE;
         return count;
-    }
-
-    /// @dev Unbounded, only safe as long as the open requests stay small.
-    function _expireOpenTradeRequests(bytes32 productDefinitionId) internal {
-        EnumerableSet.Bytes32Set storage set = _activeRequestIdsByProduct[productDefinitionId];
-        uint256 len = set.length();
-        for (uint256 i = len; i > 0; i--) {
-            bytes32 tradeId = set.at(i - 1);
-            TradeRequest storage request = _tradeRequestsById[tradeId];
-            request.status = TradeRequestStatus.Expired;
-            set.remove(tradeId);
-            emit TradeRequestExpired(productDefinitionId, request.client, tradeId);
-        }
     }
 
     // ------------------------------ Validation Helpers ------------------------------ */
@@ -753,15 +487,7 @@ contract ProductDefinitionRegistry is IProductDefinitionRegistry, IXMLRepresenta
         }
     }
 
-    /// @dev For createTradeRequest: only Active.
-    function _activeProductDefinition(bytes32 productDefinitionId) internal view returns (ProductDefinitionStorage storage definition) {
-        definition = _existingProductDefinition(productDefinitionId);
-        if (definition.status != ProductDefinitionStatus.Active) {
-            revert ProductDefinitionNotActive(productDefinitionId, definition.status);
-        }
-    }
-
-    /// @dev For fulfillment: Active OR Suspended.
+    /// @dev Existing requests may still be fulfilled while a definition is suspended.
     function _fulfillableProductDefinition(bytes32 productDefinitionId) internal view returns (ProductDefinitionStorage storage definition) {
         definition = _existingProductDefinition(productDefinitionId);
         if (definition.status != ProductDefinitionStatus.Active && definition.status != ProductDefinitionStatus.Suspended) {
@@ -773,13 +499,6 @@ contract ProductDefinitionRegistry is IProductDefinitionRegistry, IXMLRepresenta
         assignment = _indicationsByDefinitionId[productDefinitionId];
         if (assignment.productIndication == address(0)) {
             revert MissingProductIndication(productDefinitionId);
-        }
-    }
-
-    function _activeTradeRequest(bytes32 tradeRequestId) internal view returns (TradeRequest storage request) {
-        request = _tradeRequestsById[tradeRequestId];
-        if (request.status != TradeRequestStatus.Active) {
-            revert InvalidTradeRequestStatus(tradeRequestId, request.status);
         }
     }
 
@@ -814,7 +533,6 @@ contract ProductDefinitionRegistry is IProductDefinitionRegistry, IXMLRepresenta
         IProductFactory factory = IProductFactory(productDefinition.productFactory);
         _validateProductFactory(productDefinition.productFactory);
         _validateTextResource(productDefinition.productTermsTemplate, factory.productTermsTemplateResourceType());
-        _validateTextResource(productDefinition.productDocumentationTemplate, factory.productDocumentationTemplateResourceType());
     }
 
     function _validateProductFactory(address factory) internal view {
@@ -830,11 +548,11 @@ contract ProductDefinitionRegistry is IProductDefinitionRegistry, IXMLRepresenta
         } catch {
             revert ContractCallFailed(factory, "productRegistryAddress()");
         }
-        // Factory must implement meaningful product specifications: productPayloadSchema, productTermsTemplateResourceType, productDocumentationTemplateResourceType
+        // Factory must declare its payload schema and the resource type of its terms template.
         if (bytes(productFactory.productPayloadSchema()).length == 0) {
             revert InvalidProductFactory(factory);
         }
-        if (productFactory.productTermsTemplateResourceType() == bytes32(0) || productFactory.productDocumentationTemplateResourceType() == bytes32(0)) {
+        if (productFactory.productTermsTemplateResourceType() == bytes32(0)) {
             revert InvalidProductFactory(factory);
         }
     }

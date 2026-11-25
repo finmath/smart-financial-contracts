@@ -15,7 +15,6 @@ pragma solidity ^0.8.24;
  * @param productDefinitionId          Product definition used for the deployment.
  * @param productDefinitionVersion     Version of the product definition at deployment.
  * @param productTermsTemplate         Product terms text resource.
- * @param productDocumentationTemplate Product documentation text resource.
  */
     struct CommonDeploymentParams {
         address productRegistry;
@@ -23,7 +22,6 @@ pragma solidity ^0.8.24;
         bytes32 productDefinitionId;
         uint256 productDefinitionVersion;
         address productTermsTemplate;
-        address productDocumentationTemplate;
     }
 
 /**
