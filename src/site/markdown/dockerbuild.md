@@ -1,5 +1,8 @@
 # Docker: Building the Docker Container
 
+Images include the CVE-2026-114938 workaround; Dockerfile and Jib pin patched Temurin 17.0.21.1+2.
+Rebuild and redeploy existing containers, preserving `-XX:-UseBASE64Intrinsics` if overriding `JAVA_TOOL_OPTIONS`.
+
 ## Build the Docker Container (locally)
 
 To build a local version of the container (for testing) and running it, execute following commands.
@@ -32,7 +35,7 @@ has to be adapted.
 running Docker).
 
 ```
-docker build -t valuation_service .
+docker build --pull -t valuation_service .
 docker run -v /PATH/TO/YOUR/CONFIG:/config -p 8080:8080 valuation_service
 ```
 

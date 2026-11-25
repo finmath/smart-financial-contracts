@@ -1,5 +1,57 @@
 # FX Spot Trade demo
 
+## Headless local demo
+
+Run the lifecycle from one terminal with Python 3.9+ and Foundry (`forge`, `cast`,
+and `anvil`) on `PATH`:
+
+```bash
+# From the repository root
+python3 solidity/examples/fx-spot-trade/scripts/headless-demo.py
+```
+
+The runner builds the contracts, starts its own Anvil on an available loopback
+port, deploys and funds the example tokens, and creates a router-registered trade.
+It checks settlement, cancellation and successive trades on the same instance,
+including exact balances, allowances and retained trade history. Each run stops
+its Anvil process when finished, including on failure or interruption.
+
+The automated scenario is:
+
+1. Fund Party B with 5 BASE (18 decimals) and Party A with 10 QUOTE (6 decimals).
+2. Incept trade `1`: Party A receives 1 BASE and pays 1.10 QUOTE. Attempt
+   confirmation with only the BASE leg approved and verify atomic rollback.
+3. Approve the QUOTE leg and settle trade `1`, consuming both exact allowances.
+4. Let Party B incept and cancel trade `2`, with no token movements.
+5. Approve an operator for both participants, settle trade `3` at the original
+   amounts on their behalf, and revoke the operator approvals.
+
+The final balances are 2 BASE / 7.80 QUOTE for Party A and 3 BASE / 2.20 QUOTE for
+Party B. Trades `1` and `3` remain settled and trade `2` remains canceled.
+
+The console prints the evidence directory and the result. To choose a fresh
+output directory explicitly:
+
+```bash
+python3 solidity/examples/fx-spot-trade/scripts/headless-demo.py \
+  --output /tmp/fx-spot-demo-run-1
+```
+
+Existing output directories are rejected so earlier evidence is preserved. The
+report records the outcome and lifecycle checks alongside transaction receipts,
+block-pinned state snapshots, build/chain logs and the contracts' ERC-8100 XML
+templates. Token quantities are recorded as exact integer strings in smallest
+token units. The XML files are templates; rendered XML and browser views remain
+part of the renderer tour below.
+
+This follows the automated deployment, workflow checks and evidence-reporting
+approach of `smart-bond-contract`'s `BackendFixedRateBondDemo`. It drives the
+existing FX contracts directly through local EVM RPC. The FX example has no
+participant REST backends, Pontes adapters or product-definition registry
+integration; the proposed framework integration is described at the end of this
+guide. The runner uses only its own disposable local chain and requires no wallet
+configuration or external service.
+
 ## FX Spot Trade lifecycle tour with Foundry and ERC-8100
 
 This tour runs the included `FxSpotTrade` contracts locally and observes the trade instance and both example tokens through the generic ERC-8100 `EvmXmlRenderer`.

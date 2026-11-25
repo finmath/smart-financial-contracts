@@ -7,6 +7,9 @@ permissions:
 
 jobs:
   frontend:
+    env:
+      # Protect JVMs even if the runner or distribution caches an older patch.
+      JAVA_TOOL_OPTIONS: "-XX:-UseBASE64Intrinsics"
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -22,6 +25,7 @@ jobs:
         with:
           distribution: 'zulu'
           java-version: '17'
+          check-latest: true
       - run: npm ci
       - name: Generate API client and build production bundle
         run: npm run build

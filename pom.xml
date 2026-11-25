@@ -663,7 +663,15 @@
                 <configuration>
                     <mainClass>net.finmath.smartcontract.valuation.service.Application</mainClass>
                     <imageName>docker.io/finmath/${project.artifactId}:${project.version}</imageName>
-                    <jvmArguments>--add-opens java.base/java.time=ALL-UNNAMED</jvmArguments>
+                    <jvmArguments>-XX:-UseBASE64Intrinsics --add-opens java.base/java.time=ALL-UNNAMED</jvmArguments>
+                    <image>
+                        <pullPolicy>ALWAYS</pullPolicy>
+                        <env>
+                            <BP_JVM_VERSION>17</BP_JVM_VERSION>
+                            <BPE_DELIM_JAVA_TOOL_OPTIONS xml:space="preserve"> </BPE_DELIM_JAVA_TOOL_OPTIONS>
+                            <BPE_APPEND_JAVA_TOOL_OPTIONS>-XX:-UseBASE64Intrinsics</BPE_APPEND_JAVA_TOOL_OPTIONS>
+                        </env>
+                    </image>
                 </configuration>
                 <executions>
                     <execution>
@@ -818,10 +826,16 @@
                 <artifactId>jib-maven-plugin</artifactId>
                 <version>${jib-maven-plugin.version}</version>
                 <configuration>
+                    <from>
+                        <image>eclipse-temurin:17.0.21.1_2-jre</image>
+                    </from>
                     <to>
                         <image>docker.io/finmath/${project.artifactId}:${project.version}</image>
                     </to>
                     <container>
+                        <jvmFlags>
+                            <jvmFlag>-XX:-UseBASE64Intrinsics</jvmFlag>
+                        </jvmFlags>
                         <mainClass>
                             net.finmath.smartcontract.valuation.service.Application
                         </mainClass>

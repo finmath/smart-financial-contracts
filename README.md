@@ -55,7 +55,9 @@ framework; it does not replace the renderer service.
 
 ## Valuation service
 
-With Java 17 and Maven installed, run `mvn spring-boot:run` from the repository root.
+Use patched Java 17 (Temurin 17.0.21.1+2 or equivalent) and Maven; run `mvn spring-boot:run`.
+Update host JVMs and restart services; rebuild and redeploy containers to apply the fix.
+Until patched, retain `-XX:-UseBASE64Intrinsics` in JVM startup options.
 See the [valuation service documentation](src/site/markdown/valuationservice.md) and
 [Docker instructions](src/site/markdown/dockerbuild.md) for configuration and usage.
 
